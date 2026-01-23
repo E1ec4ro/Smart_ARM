@@ -1,0 +1,18 @@
+services:
+  gazebo-vnc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smart_arm_gazebo_vnc
+    ports:
+      - "6080:6080"
+      - "5900:5900"
+      - "11311:11311"
+    environment:
+      - DISPLAY=:1
+    shm_size: "1gb"
+    restart: unless-stopped
+    volumes:
+      - ./gazebo_home:/root/.gazebo
+      - ./saved_worlds:/saved_worlds
+

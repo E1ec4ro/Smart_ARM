@@ -1,0 +1,12 @@
+<launch>
+  <node name="camera_view_detected"
+        pkg="image_view"
+        type="image_view"
+        args="image:=/overhead_camera/image_detected"
+        output="screen"
+        respawn="true"
+        launch-prefix="bash -c 'sleep 10; export DISPLAY=:1; xhost +local: 2>/dev/null; $0 $@'">
+    <env name="DISPLAY" value=":1"/>
+  </node>
+</launch>
+

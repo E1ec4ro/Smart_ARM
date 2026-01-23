@@ -1,0 +1,8 @@
+**/.git
+**/.gitignore
+**/.cursor
+**/terminals
+**/node_modules
+**/__pycache__
+**/*.pyc
+

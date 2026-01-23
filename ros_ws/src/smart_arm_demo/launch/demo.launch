@@ -1,0 +1,25 @@
+<launch>
+  <include file="$(find smart_arm_demo)/launch/sim.launch" />
+
+  <node name="neural_network_camera"
+        pkg="smart_arm_demo"
+        type="neural_network_camera.py"
+        output="screen"
+        launch-prefix="bash -c 'sleep 8; $0 $@'"/>
+
+  <include file="$(find smart_arm_demo)/launch/camera_view.launch" />
+
+  <node name="move_ur5_demo" pkg="smart_arm_demo" type="move_ur5_demo.py"
+        output="screen"
+        launch-prefix="bash -c 'sleep 25; $0 $@'"/>
+
+  <node name="gripper_control"
+        pkg="smart_arm_demo"
+        type="gripper_control.py"
+        output="screen"
+        launch-prefix="bash -c 'sleep 20; $0 $@'">
+    <param name="close_position" value="0.055"/>
+    <param name="open_position" value="0.0"/>
+  </node>
+</launch>
+

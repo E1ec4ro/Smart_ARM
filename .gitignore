@@ -1,0 +1,10 @@
+.cursor/
+.vscode/
+
+__pycache__/
+*.pyc
+
+gazebo_home/
+
+GAZEBO_VNC_WEB/
+

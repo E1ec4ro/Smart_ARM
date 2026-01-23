@@ -1,0 +1,272 @@
+<sdf version='1.7'>
+  <world name='smart_arm_world'>
+    <gravity>0 0 -9.81</gravity>
+
+    <light name='sun' type='directional'>
+      <cast_shadows>1</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name='ground_plane'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name='visual'>
+          <cast_shadows>0</cast_shadows>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <script>
+              <uri>file://media/materials/scripts/gazebo.material</uri>
+              <name>Gazebo/Grey</name>
+            </script>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='robot_pedestal'>
+      <static>1</static>
+      <link name='pedestal_link'>
+        <pose>0 0 0.10 0 0 0</pose>
+        <collision name='collision'>
+          <geometry>
+            <box>
+              <size>1.0 1.0 0.20</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <box>
+              <size>1.0 1.0 0.20</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.55 0.55 0.55 1</ambient>
+            <diffuse>0.75 0.75 0.75 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='work_table'>
+      <static>1</static>
+      <link name='top'>
+        <pose>-0.030288 0.895696 0.40 0 0 0</pose>
+        <collision name='collision'>
+          <geometry>
+            <box>
+              <size>1.20 0.80 0.05</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <box>
+              <size>1.20 0.80 0.05</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.65 0.65 0.65 1</ambient>
+            <diffuse>0.80 0.80 0.80 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='overhead_camera_model'>
+      <static>1</static>
+      <link name='overhead_camera_link'>
+        <pose>0.619308 0.874419 1.18362 0.027906 0.947704 -3.09384</pose>
+        <visual name='visual'>
+          <geometry>
+            <box>
+              <size>0.08 0.08 0.04</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.1 1</ambient>
+            <diffuse>0.1 0.1 0.1 1</diffuse>
+          </material>
+        </visual>
+        <sensor name='overhead_camera' type='camera'>
+          <update_rate>30</update_rate>
+          <pose>0 0 0 0 0 0</pose>
+          <camera>
+            <horizontal_fov>1.6</horizontal_fov>
+            <image>
+              <width>800</width>
+              <height>600</height>
+              <format>R8G8B8</format>
+            </image>
+            <clip>
+              <near>0.2</near>
+              <far>10</far>
+            </clip>
+          </camera>
+          <plugin name='camera_controller' filename='libgazebo_ros_camera.so'>
+            <alwaysOn>1</alwaysOn>
+            <updateRate>30.0</updateRate>
+            <cameraName>overhead_camera</cameraName>
+            <imageTopicName>image_raw</imageTopicName>
+            <frameName>overhead_camera_link</frameName>
+          </plugin>
+        </sensor>
+      </link>
+    </model>
+
+    <model name='blue_cube'>
+      <static>0</static>
+      <link name='cube_link'>
+        <pose>-0.403194 0.669364 0.455001 0 0 0</pose>
+        <collision name='collision'>
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <material><ambient>0 0 1 1</ambient><diffuse>0 0 1 1</diffuse></material>
+        </visual>
+        <inertial><mass>0.15</mass></inertial>
+      </link>
+    </model>
+
+    <model name='yellow_cube'>
+      <static>0</static>
+      <link name='cube_link'>
+        <pose>0.01246 1.12737 0.455 0 0 0</pose>
+        <collision name='collision'>
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <material><ambient>1 1 0 1</ambient><diffuse>1 1 0 1</diffuse></material>
+        </visual>
+        <inertial><mass>0.15</mass></inertial>
+      </link>
+    </model>
+
+    <model name='purple_cube'>
+      <static>0</static>
+      <link name='cube_link'>
+        <pose>0.393889 0.766223 0.455001 0 0 0</pose>
+        <collision name='collision'>
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <material><ambient>0.6 0 0.8 1</ambient><diffuse>0.6 0 0.8 1</diffuse></material>
+        </visual>
+        <inertial><mass>0.15</mass></inertial>
+      </link>
+    </model>
+
+    <model name='target_cube'>
+      <static>0</static>
+      <link name='cube_link'>
+        <pose>0.061525 0.728815 0.465001 0 0 0</pose>
+        <collision name='collision'>
+          <geometry>
+            <box>
+              <size>0.08 0.08 0.08</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <box>
+              <size>0.08 0.08 0.08</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 0 0 1</ambient>
+            <diffuse>1 0 0 1</diffuse>
+          </material>
+        </visual>
+        <inertial><mass>0.2</mass></inertial>
+      </link>
+    </model>
+
+    <model name='cube_container'>
+      <static>1</static>
+      <link name='container_link'>
+        <pose>-0.425497 0.928255 0.46 0 0 0</pose>
+        <collision name='collision'>
+          <geometry>
+            <box>
+              <size>0.18 0.18 0.06</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='body'>
+          <geometry>
+            <box>
+              <size>0.18 0.18 0.06</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.4 0.1 1</ambient>
+            <diffuse>0.1 0.6 0.1 1</diffuse>
+          </material>
+        </visual>
+        <visual name='green_x_1'>
+          <geometry>
+            <box>
+              <size>0.16 0.01 0.001</size>
+            </box>
+          </geometry>
+          <pose>0 0 0.031 0 0 0.785398</pose>
+          <material>
+            <ambient>0 1 0 1</ambient>
+            <diffuse>0 1 0 1</diffuse>
+          </material>
+        </visual>
+        <visual name='green_x_2'>
+          <geometry>
+            <box>
+              <size>0.16 0.01 0.001</size>
+            </box>
+          </geometry>
+          <pose>0 0 0.031 0 0 -0.785398</pose>
+          <material>
+            <ambient>0 1 0 1</ambient>
+            <diffuse>0 1 0 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <physics type='ode'>
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+
+    <scene>
+      <ambient>0.4 0.4 0.4 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>1</shadows>
+    </scene>
+  </world>
+</sdf>
+

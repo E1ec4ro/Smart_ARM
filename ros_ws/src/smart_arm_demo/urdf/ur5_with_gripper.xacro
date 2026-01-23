@@ -1,0 +1,159 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur5_with_gripper">
+  <xacro:include filename="$(find ur_description)/urdf/inc/ur5_macro.xacro"/>
+
+  <material name="mat_black">
+    <color rgba="0.1 0.1 0.1 1"/>
+  </material>
+  <material name="mat_grey">
+    <color rgba="0.65 0.65 0.65 1"/>
+  </material>
+  <material name="mat_green">
+    <color rgba="0.0 0.9 0.2 1"/>
+  </material>
+
+  <xacro:ur5_robot
+    prefix=""
+    transmission_hw_interface="hardware_interface/EffortJointInterface"/>
+
+  <gazebo>
+    <plugin name="ros_control" filename="libgazebo_ros_control.so"/>
+  </gazebo>
+
+  <gazebo reference="base_link">
+    <kinematic>true</kinematic>
+    <gravity>false</gravity>
+    <selfCollide>false</selfCollide>
+  </gazebo>
+
+  <link name="gripper_base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.2"/>
+      <inertia ixx="0.0002" ixy="0" ixz="0" iyy="0.0002" iyz="0" izz="0.0002"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0.03" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.10 0.16 0.02"/>
+      </geometry>
+      <material name="mat_black"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.03" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.10 0.16 0.02"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="gripper_base_joint" type="fixed">
+    <parent link="wrist_3_link"/>
+    <child link="gripper_base_link"/>
+    <origin xyz="0.12 0 0.00" rpy="0 0 0"/>
+  </joint>
+
+  <gazebo reference="gripper_base_joint">
+    <preserveFixedJoint>true</preserveFixedJoint>
+    <disableFixedJointLumping>true</disableFixedJointLumping>
+  </gazebo>
+
+  <link name="finger_left_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.05"/>
+      <inertia ixx="0.00002" ixy="0" ixz="0" iyy="0.00002" iyz="0" izz="0.00002"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.01 0.10"/>
+      </geometry>
+      <material name="mat_green"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.01 0.10"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <link name="finger_right_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.05"/>
+      <inertia ixx="0.00002" ixy="0" ixz="0" iyy="0.00002" iyz="0" izz="0.00002"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.01 0.10"/>
+      </geometry>
+      <material name="mat_green"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.01 0.10"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="finger_left_joint" type="prismatic">
+    <parent link="wrist_3_link"/>
+    <child link="finger_left_link"/>
+    <origin xyz="0.12 0.06 0" rpy="0 0 0"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="0.0" upper="0.055" effort="60" velocity="0.25"/>
+    <dynamics damping="2.0" friction="1.0"/>
+  </joint>
+
+  <joint name="finger_right_joint" type="prismatic">
+    <parent link="wrist_3_link"/>
+    <child link="finger_right_link"/>
+    <origin xyz="0.12 -0.06 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0.0" upper="0.055" effort="60" velocity="0.25"/>
+    <dynamics damping="2.0" friction="1.0"/>
+  </joint>
+
+  <transmission name="finger_left_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="finger_left_joint">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="finger_left_motor">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="finger_right_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="finger_right_joint">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="finger_right_motor">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <gazebo reference="finger_left_link">
+    <mu1>50</mu1>
+    <mu2>50</mu2>
+    <kp>100000</kp>
+    <kd>5</kd>
+    <selfCollide>false</selfCollide>
+  </gazebo>
+
+  <gazebo reference="finger_right_link">
+    <mu1>50</mu1>
+    <mu2>50</mu2>
+    <kp>100000</kp>
+    <kd>5</kd>
+    <selfCollide>false</selfCollide>
+  </gazebo>
+</robot>
+
