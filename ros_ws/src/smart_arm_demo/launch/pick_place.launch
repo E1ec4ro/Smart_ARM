@@ -1,0 +1,63 @@
+<launch>
+  <include file="$(find smart_arm_demo)/launch/sim.launch" />
+
+  <node name="neural_network_camera"
+        pkg="smart_arm_demo"
+        type="neural_network_camera.py"
+        output="screen"
+        launch-prefix="bash -c 'sleep 8; $0 $@'">
+    <rosparam file="$(find smart_arm_demo)/config/camera_model.yaml" command="load"/>
+    <rosparam file="$(find smart_arm_demo)/config/workspace.yaml" command="load"/>
+    <param name="use_gazebo_ground_truth" value="true"/>
+    <param name="ground_truth_only" value="true"/>
+    <param name="cube_link_name" value="target_cube::cube_link"/>
+    <param name="goal_link_name" value="cube_container::container_link"/>
+  </node>
+
+  <include file="$(find smart_arm_demo)/launch/camera_view.launch" />
+
+  <node name="gripper_control"
+        pkg="smart_arm_demo"
+        type="gripper_control.py"
+        output="screen"
+        launch-prefix="bash -c 'sleep 20; $0 $@'">
+    <param name="close_position" value="0.055"/>
+    <param name="open_position" value="0.0"/>
+  </node>
+
+  <include file="$(find smart_arm_demo)/launch/moveit_move_group.launch" />
+
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_base_link"
+        args="0 0 0.20 0 0 0 world base_link" />
+
+  <node name="gazebo_attach"
+        pkg="smart_arm_demo"
+        type="gazebo_attach_node.py"
+        output="screen"
+        launch-prefix="bash -c 'sleep 18; $0 $@'">
+    <param name="model_name" value="target_cube"/>
+    <param name="link_name" value="ur5::gripper_base_link"/>
+    <rosparam param="offset_xyz">[0.0, 0.0, 0.06]</rosparam>
+  </node>
+
+  <node name="pick_place_moveit"
+        pkg="smart_arm_demo"
+        type="pick_place_moveit.py"
+        output="screen"
+        launch-prefix="bash -c 'sleep 30; $0 $@'">
+    <rosparam file="$(find smart_arm_demo)/config/workspace.yaml" command="load"/>
+    <param name="run_once" value="true"/>
+    <param name="go_home_on_start" value="true"/>
+    <param name="ee_link" value="gripper_base_link"/>
+    <param name="planning_frame" value="base_link"/>
+    <rosparam param="world_to_base_link_xyz">[0.0, 0.0, 0.20]</rosparam>
+    <param name="lock_wrist" value="true"/>
+    <param name="wrist_2_center" value="1.57"/>
+    <param name="wrist_3_center" value="0.0"/>
+    <param name="wrist_tol" value="0.35"/>
+    <param name="grasp_height_offset" value="0.00"/>
+    <param name="attach_srv" value="/gazebo_attach/attach"/>
+    <param name="detach_srv" value="/gazebo_attach/detach"/>
+  </node>
+</launch>
+

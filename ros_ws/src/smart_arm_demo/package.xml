@@ -25,6 +25,9 @@
   <exec_depend>image_view</exec_depend>
   <exec_depend>xacro</exec_depend>
   <exec_depend>ur_description</exec_depend>
+  <exec_depend>moveit_commander</exec_depend>
+  <exec_depend>moveit_ros_move_group</exec_depend>
+  <exec_depend>moveit_msgs</exec_depend>
 
 </package>
 

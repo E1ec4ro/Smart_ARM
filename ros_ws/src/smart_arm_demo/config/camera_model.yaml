@@ -1,0 +1,9 @@
+world_frame: world
+
+camera_xyz: [0.619308, 0.874419, 1.18362]
+camera_rpy: [0.027906, 0.947704, -3.09384]
+
+image_width: 800
+image_height: 600
+hfov: 1.6
+

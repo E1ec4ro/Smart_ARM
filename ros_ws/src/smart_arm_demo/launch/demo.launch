@@ -5,7 +5,10 @@
         pkg="smart_arm_demo"
         type="neural_network_camera.py"
         output="screen"
-        launch-prefix="bash -c 'sleep 8; $0 $@'"/>
+        launch-prefix="bash -c 'sleep 8; $0 $@'">
+    <rosparam file="$(find smart_arm_demo)/config/camera_model.yaml" command="load"/>
+    <rosparam file="$(find smart_arm_demo)/config/workspace.yaml" command="load"/>
+  </node>
 
   <include file="$(find smart_arm_demo)/launch/camera_view.launch" />
 

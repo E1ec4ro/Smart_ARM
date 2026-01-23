@@ -12,6 +12,8 @@ catkin_install_python(PROGRAMS
   scripts/move_ur5_demo.py
   scripts/neural_network_camera.py
   scripts/gripper_control.py
+  scripts/pick_place_moveit.py
+  scripts/gazebo_attach_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

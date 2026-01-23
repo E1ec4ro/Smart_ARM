@@ -17,6 +17,8 @@ RUN apt-get update -o Acquire::Retries=5 && apt-get install -y --no-install-reco
     supervisor \
     novnc websockify \
     python3-pip python3-rosdep \
+    ros-noetic-moveit \
+    ros-noetic-ur5-moveit-config \
     ros-noetic-gazebo-ros-pkgs \
     ros-noetic-gazebo-ros-control \
     ros-noetic-ur-description \
