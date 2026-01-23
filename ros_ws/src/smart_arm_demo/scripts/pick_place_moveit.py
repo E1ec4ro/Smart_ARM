@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
+import copy
 import math
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Iterator
 
 import rospy
 import moveit_commander
 
-from geometry_msgs.msg import PoseStamped, Quaternion
+from geometry_msgs.msg import Pose, PoseStamped, Quaternion
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
@@ -37,6 +39,33 @@ class WorkspaceConfig:
     approach_height: float
     lift_height: float
     place_clearance: float
+
+
+class StepRunner:
+    def __init__(self) -> None:
+        self._i = 0
+        self.current_step = ""
+
+    @contextmanager
+    def step(self, name: str) -> Iterator[None]:
+        self._i += 1
+        self.current_step = f"{self._i:02d} {name}"
+        t0 = time.time()
+        banner = f"========== [STEP {self.current_step}] START =========="
+        rospy.loginfo(banner)
+        print(banner, flush=True)
+        try:
+            yield
+            dt = time.time() - t0
+            msg = f"========== [STEP {self.current_step}] OK (dt={dt:.2f}s) =========="
+            rospy.loginfo(msg)
+            print(msg, flush=True)
+        except Exception as e:
+            dt = time.time() - t0
+            msg = f"========== [STEP {self.current_step}] FAIL (dt={dt:.2f}s): {e} =========="
+            rospy.logerr(msg)
+            print(msg, flush=True)
+            raise
 
 
 class PickPlaceMoveIt:
@@ -85,6 +114,18 @@ class PickPlaceMoveIt:
         self.attach_srv = rospy.get_param("~attach_srv", "/gazebo_attach/attach")
         self.detach_srv = rospy.get_param("~detach_srv", "/gazebo_attach/detach")
 
+        self.trajectory_time_scale = float(rospy.get_param("~trajectory_time_scale", 2.0))
+        self.post_action_pause_s = float(rospy.get_param("~post_action_pause_s", 5.0))
+        self.attach_max_distance_m = float(rospy.get_param("~attach_max_distance_m", 0.12))
+
+        self.enable_scene_obstacles = bool(rospy.get_param("~enable_scene_obstacles", True))
+        self.scene_table_center_world = rospy.get_param("~scene_table_center_world", [-0.030288, 0.895696, 0.40])
+        self.scene_table_size = rospy.get_param("~scene_table_size", [1.20, 0.80, 0.05])
+        self.scene_pedestal_center_world = rospy.get_param("~scene_pedestal_center_world", [0.0, 0.0, 0.10])
+        self.scene_pedestal_size = rospy.get_param("~scene_pedestal_size", [1.0, 1.0, 0.20])
+        self.scene_keepout_center_base = rospy.get_param("~scene_keepout_center_base", [0.0, 0.0, -0.20])
+        self.scene_keepout_size = rospy.get_param("~scene_keepout_size", [2.0, 2.0, 0.40])
+
         self.cfg = WorkspaceConfig(
             cube_size=float(rospy.get_param("~cube_size", rospy.get_param("~target_cube/size", 0.08))),
             approach_height=float(rospy.get_param("~approach_height", 0.15)),
@@ -97,6 +138,9 @@ class PickPlaceMoveIt:
         self.wrist_2_center = float(rospy.get_param("~wrist_2_center", 1.57))
         self.wrist_3_center = float(rospy.get_param("~wrist_3_center", 0.0))
         self.wrist_tol = float(rospy.get_param("~wrist_tol", 0.35))
+
+        self.ee_orientation_mode = str(rospy.get_param("~ee_orientation_mode", "home")).strip().lower()
+        self._ee_orientation_ref = None
 
         self._latest_cube = None
         self._latest_goal = None
@@ -129,8 +173,8 @@ class PickPlaceMoveIt:
         self.group.set_num_planning_attempts(int(rospy.get_param("~planning_attempts", 5)))
         self.group.allow_replanning(True)
 
-        self.group.set_max_velocity_scaling_factor(float(rospy.get_param("~vel_scale", 0.4)))
-        self.group.set_max_acceleration_scaling_factor(float(rospy.get_param("~acc_scale", 0.4)))
+        self.group.set_max_velocity_scaling_factor(float(rospy.get_param("~vel_scale", 0.2)))
+        self.group.set_max_acceleration_scaling_factor(float(rospy.get_param("~acc_scale", 0.2)))
         self.group.set_goal_position_tolerance(float(rospy.get_param("~pos_tol", 0.01)))
         self.group.set_goal_orientation_tolerance(float(rospy.get_param("~ori_tol", 0.05)))
 
@@ -139,6 +183,53 @@ class PickPlaceMoveIt:
         rospy.loginfo(
             f"Pick&Place ready. group={self.group_name}, planning_frame={self.group.get_planning_frame()}, ee={self.group.get_end_effector_link()}"
         )
+
+    def _setup_planning_scene(self) -> None:
+        if not self.enable_scene_obstacles:
+            return
+        try:
+            for name in ["scene_table", "scene_pedestal", "scene_keepout"]:
+                try:
+                    self.scene.remove_world_object(name)
+                except Exception:
+                    pass
+
+            tx, ty, tz = float(self.scene_table_center_world[0]), float(self.scene_table_center_world[1]), float(self.scene_table_center_world[2])
+            sx, sy, sz = float(self.scene_table_size[0]), float(self.scene_table_size[1]), float(self.scene_table_size[2])
+            table_ps = PoseStamped()
+            table_ps.header.frame_id = self.planning_frame
+            table_ps.header.stamp = rospy.Time.now()
+            table_ps.pose.position.x = tx - float(self.world_to_base_link_xyz[0])
+            table_ps.pose.position.y = ty - float(self.world_to_base_link_xyz[1])
+            table_ps.pose.position.z = tz - float(self.world_to_base_link_xyz[2])
+            table_ps.pose.orientation.w = 1.0
+            self.scene.add_box("scene_table", table_ps, size=(sx, sy, sz))
+
+            px, py, pz = float(self.scene_pedestal_center_world[0]), float(self.scene_pedestal_center_world[1]), float(self.scene_pedestal_center_world[2])
+            psx, psy, psz = float(self.scene_pedestal_size[0]), float(self.scene_pedestal_size[1]), float(self.scene_pedestal_size[2])
+            ped_ps = PoseStamped()
+            ped_ps.header.frame_id = self.planning_frame
+            ped_ps.header.stamp = rospy.Time.now()
+            ped_ps.pose.position.x = px - float(self.world_to_base_link_xyz[0])
+            ped_ps.pose.position.y = py - float(self.world_to_base_link_xyz[1])
+            ped_ps.pose.position.z = pz - float(self.world_to_base_link_xyz[2])
+            ped_ps.pose.orientation.w = 1.0
+            self.scene.add_box("scene_pedestal", ped_ps, size=(psx, psy, psz))
+
+            kx, ky, kz = float(self.scene_keepout_center_base[0]), float(self.scene_keepout_center_base[1]), float(self.scene_keepout_center_base[2])
+            ksx, ksy, ksz = float(self.scene_keepout_size[0]), float(self.scene_keepout_size[1]), float(self.scene_keepout_size[2])
+            keep_ps = PoseStamped()
+            keep_ps.header.frame_id = self.planning_frame
+            keep_ps.header.stamp = rospy.Time.now()
+            keep_ps.pose.position.x = kx
+            keep_ps.pose.position.y = ky
+            keep_ps.pose.position.z = kz
+            keep_ps.pose.orientation.w = 1.0
+            self.scene.add_box("scene_keepout", keep_ps, size=(ksx, ksy, ksz))
+
+            rospy.sleep(0.8)
+        except Exception as e:
+            rospy.logwarn(f"Failed to set up planning scene obstacles: {e}")
 
     def _apply_path_constraints(self) -> None:
         try:
@@ -254,7 +345,17 @@ class PickPlaceMoveIt:
         except Exception:
             self._set_moveit_start_state_home()
 
-        self.group.set_position_target([float(x), float(y), float(z)], self.group.get_end_effector_link())
+        use_pose_target = bool(self._ee_orientation_ref is not None and self.ee_orientation_mode != "none")
+        if use_pose_target:
+            p = Pose()
+            p.position.x = float(x)
+            p.position.y = float(y)
+            p.position.z = float(z)
+            p.orientation = self._ee_orientation_ref
+            self.group.set_pose_target(p, self.group.get_end_effector_link())
+        else:
+            self.group.set_position_target([float(x), float(y), float(z)], self.group.get_end_effector_link())
+
         retries = int(rospy.get_param("~plan_retries", 3))
         last_plan = None
         for attempt in range(max(retries, 1)):
@@ -269,7 +370,20 @@ class PickPlaceMoveIt:
 
             if attempt == 0:
                 self._set_moveit_start_state_home()
+                if use_pose_target:
+                    try:
+                        self.group.clear_pose_targets()
+                        self.group.set_position_target([float(x), float(y), float(z)], self.group.get_end_effector_link())
+                        use_pose_target = False
+                    except Exception:
+                        pass
         return last_plan
+
+    def _move_via_safe_z(self, x: float, y: float, z: float, safe_z: float) -> None:
+        safe_z = float(max(safe_z, z))
+        self._execute_plan(self._plan_to_position_base(x, y, safe_z))
+        if abs(float(z) - safe_z) > 1e-3:
+            self._execute_plan(self._plan_to_position_base(x, y, z))
 
     def _execute_plan(self, plan) -> None:
         try:
@@ -279,9 +393,31 @@ class PickPlaceMoveIt:
         if jt is None or len(jt.points) == 0:
             raise RuntimeError("Empty trajectory from MoveIt plan()")
 
-        self._publish_trajectory(jt)
-        dur = float(jt.points[-1].time_from_start.to_sec())
+        jt_scaled = self._time_scale_trajectory(jt)
+        self._publish_trajectory(jt_scaled)
+        dur = float(jt_scaled.points[-1].time_from_start.to_sec())
         rospy.sleep(max(dur, 0.5))
+        self._pause("after_motion")
+
+    def _pause(self, reason: str) -> None:
+        s = float(self.post_action_pause_s)
+        if s <= 0.0:
+            return
+        rospy.sleep(s)
+
+    def _time_scale_trajectory(self, traj: JointTrajectory) -> JointTrajectory:
+        scale = float(self.trajectory_time_scale)
+        if scale <= 1.0:
+            return traj
+        out = copy.deepcopy(traj)
+        for pt in out.points:
+            t = float(pt.time_from_start.to_sec()) * scale
+            pt.time_from_start = rospy.Duration(t)
+            if pt.velocities:
+                pt.velocities = [float(v) / scale for v in pt.velocities]
+            if pt.accelerations:
+                pt.accelerations = [float(a) / (scale * scale) for a in pt.accelerations]
+        return out
 
     def _make_pose(self, x: float, y: float, z: float) -> PoseStamped:
         ps = PoseStamped()
@@ -294,99 +430,174 @@ class PickPlaceMoveIt:
         return ps
 
     def run_once(self) -> None:
-        self._wait_for_joint_states()
-        if self.go_home_on_start:
-            rospy.loginfo("Moving to home joint pose.")
-            self._send_home()
+        steps = StepRunner()
+
+        with steps.step("wait_joint_states"):
             self._wait_for_joint_states()
 
-        rospy.loginfo("Waiting for perception poses...")
-        cube = self._wait_for_pose("cube")
-        goal = self._wait_for_pose("goal")
-        cube_b = self._world_to_base(cube)
-        goal_b = self._world_to_base(goal)
-        rospy.loginfo(
-            "Targets in base_link: cube(%.3f, %.3f, %.3f) goal(%.3f, %.3f, %.3f)",
-            cube_b.pose.position.x,
-            cube_b.pose.position.y,
-            cube_b.pose.position.z,
-            goal_b.pose.position.x,
-            goal_b.pose.position.y,
-            goal_b.pose.position.z,
-        )
+        if self.go_home_on_start:
+            with steps.step("go_home"):
+                self._send_home()
+                self._pause("after_go_home")
+            with steps.step("wait_joint_states_after_home"):
+                self._wait_for_joint_states()
 
-        rospy.loginfo("Opening gripper.")
-        self._call_trigger(self.gripper_open_srv)
+        with steps.step("setup_planning_scene"):
+            self._setup_planning_scene()
+
+        if self.ee_orientation_mode == "home":
+            with steps.step("capture_ee_orientation_home"):
+                try:
+                    self._ee_orientation_ref = self.group.get_current_pose().pose.orientation
+                    rospy.loginfo(
+                        "EE orientation ref (home): x=%.3f y=%.3f z=%.3f w=%.3f",
+                        self._ee_orientation_ref.x,
+                        self._ee_orientation_ref.y,
+                        self._ee_orientation_ref.z,
+                        self._ee_orientation_ref.w,
+                    )
+                except Exception as e:
+                    rospy.logwarn(f"Failed to capture EE orientation; falling back to position-only: {e}")
+                    self._ee_orientation_ref = None
+
+        with steps.step("wait_perception_poses"):
+            cube = self._wait_for_pose("cube")
+            goal = self._wait_for_pose("goal")
+
+        with steps.step("log_targets"):
+            cube_b = self._world_to_base(cube)
+            goal_b = self._world_to_base(goal)
+            rospy.loginfo(
+                "Targets in base_link: cube(%.3f, %.3f, %.3f) goal(%.3f, %.3f, %.3f)",
+                cube_b.pose.position.x,
+                cube_b.pose.position.y,
+                cube_b.pose.position.z,
+                goal_b.pose.position.x,
+                goal_b.pose.position.y,
+                goal_b.pose.position.z,
+            )
+
+        with steps.step("gripper_open"):
+            self._call_trigger(self.gripper_open_srv)
+            self._pause("after_gripper_open")
 
         pre = self._make_pose(
             cube.pose.position.x,
             cube.pose.position.y,
             cube.pose.position.z + self.cfg.approach_height,
         )
-        rospy.loginfo("Planning to pre-grasp.")
         pre_b = self._world_to_base(pre)
-        self._execute_plan(self._plan_to_position_base(pre_b.pose.position.x, pre_b.pose.position.y, pre_b.pose.position.z))
+        with steps.step("move_pre_grasp"):
+            cur_z = float(self.group.get_current_pose().pose.position.z)
+            self._move_via_safe_z(
+                float(pre_b.pose.position.x),
+                float(pre_b.pose.position.y),
+                float(pre_b.pose.position.z),
+                safe_z=max(cur_z, float(pre_b.pose.position.z)),
+            )
 
         grasp = self._make_pose(
             cube.pose.position.x,
             cube.pose.position.y,
             cube.pose.position.z + self.grasp_height_offset,
         )
-        rospy.loginfo("Planning to grasp.")
         grasp_b = self._world_to_base(grasp)
-        self._execute_plan(self._plan_to_position_base(grasp_b.pose.position.x, grasp_b.pose.position.y, grasp_b.pose.position.z))
+        with steps.step("move_grasp"):
+            cur_z = float(self.group.get_current_pose().pose.position.z)
+            self._move_via_safe_z(
+                float(grasp_b.pose.position.x),
+                float(grasp_b.pose.position.y),
+                float(grasp_b.pose.position.z),
+                safe_z=max(cur_z, float(pre_b.pose.position.z)),
+            )
 
-        rospy.loginfo("Closing gripper.")
-        self._call_trigger(self.gripper_close_srv)
+        with steps.step("gripper_close"):
+            self._call_trigger(self.gripper_close_srv)
+            self._pause("after_gripper_close")
 
-        rospy.loginfo("Attaching cube to gripper.")
-        self._call_trigger(self.attach_srv)
+        with steps.step("attach_cube"):
+            ee = self.group.get_current_pose().pose.position
+            cube_now = self._latest_cube if self._latest_cube is not None else cube
+            cube_now_b = self._world_to_base(cube_now).pose.position
+            d = math.sqrt(
+                (float(ee.x) - float(cube_now_b.x)) ** 2
+                + (float(ee.y) - float(cube_now_b.y)) ** 2
+                + (float(ee.z) - float(cube_now_b.z)) ** 2
+            )
+            if d > float(self.attach_max_distance_m):
+                raise RuntimeError(
+                    f"Refusing to attach: EE too far from cube (dist={d:.3f}m, max={float(self.attach_max_distance_m):.3f}m)"
+                )
+            self._call_trigger(self.attach_srv)
+            self._pause("after_attach")
 
         lift = self._make_pose(
             cube.pose.position.x,
             cube.pose.position.y,
             cube.pose.position.z + self.cfg.lift_height,
         )
-        rospy.loginfo("Planning to lift.")
         lift_b = self._world_to_base(lift)
-        self._execute_plan(self._plan_to_position_base(lift_b.pose.position.x, lift_b.pose.position.y, lift_b.pose.position.z))
+        with steps.step("move_lift"):
+            cur_z = float(self.group.get_current_pose().pose.position.z)
+            self._move_via_safe_z(
+                float(lift_b.pose.position.x),
+                float(lift_b.pose.position.y),
+                float(lift_b.pose.position.z),
+                safe_z=max(cur_z, float(lift_b.pose.position.z)),
+            )
 
         pre_place = self._make_pose(
             goal.pose.position.x,
             goal.pose.position.y,
             goal.pose.position.z + self.cfg.approach_height,
         )
-        rospy.loginfo("Planning to pre-place.")
         pre_place_b = self._world_to_base(pre_place)
-        self._execute_plan(
-            self._plan_to_position_base(pre_place_b.pose.position.x, pre_place_b.pose.position.y, pre_place_b.pose.position.z)
-        )
+        with steps.step("move_pre_place"):
+            cur_z = float(self.group.get_current_pose().pose.position.z)
+            self._move_via_safe_z(
+                float(pre_place_b.pose.position.x),
+                float(pre_place_b.pose.position.y),
+                float(pre_place_b.pose.position.z),
+                safe_z=max(cur_z, float(pre_place_b.pose.position.z)),
+            )
 
         place = self._make_pose(
             goal.pose.position.x,
             goal.pose.position.y,
             goal.pose.position.z + (self.cfg.cube_size * 0.5) + self.cfg.place_clearance,
         )
-        rospy.loginfo("Planning to place.")
         place_b = self._world_to_base(place)
-        self._execute_plan(self._plan_to_position_base(place_b.pose.position.x, place_b.pose.position.y, place_b.pose.position.z))
+        with steps.step("move_place"):
+            cur_z = float(self.group.get_current_pose().pose.position.z)
+            self._move_via_safe_z(
+                float(place_b.pose.position.x),
+                float(place_b.pose.position.y),
+                float(place_b.pose.position.z),
+                safe_z=max(cur_z, float(pre_place_b.pose.position.z)),
+            )
 
-        rospy.loginfo("Detaching cube.")
-        self._call_trigger(self.detach_srv)
+        with steps.step("detach_cube"):
+            self._call_trigger(self.detach_srv)
+            self._pause("after_detach")
 
-        rospy.loginfo("Opening gripper.")
-        self._call_trigger(self.gripper_open_srv)
+        with steps.step("gripper_open_after_place"):
+            self._call_trigger(self.gripper_open_srv)
+            self._pause("after_gripper_open_place")
 
         retreat = self._make_pose(
             goal.pose.position.x,
             goal.pose.position.y,
             goal.pose.position.z + self.cfg.approach_height,
         )
-        rospy.loginfo("Planning retreat.")
         retreat_b = self._world_to_base(retreat)
-        self._execute_plan(
-            self._plan_to_position_base(retreat_b.pose.position.x, retreat_b.pose.position.y, retreat_b.pose.position.z)
-        )
+        with steps.step("move_retreat"):
+            cur_z = float(self.group.get_current_pose().pose.position.z)
+            self._move_via_safe_z(
+                float(retreat_b.pose.position.x),
+                float(retreat_b.pose.position.y),
+                float(retreat_b.pose.position.z),
+                safe_z=max(cur_z, float(retreat_b.pose.position.z)),
+            )
 
         rospy.loginfo("Pick&place completed.")
 

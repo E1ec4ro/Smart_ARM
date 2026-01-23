@@ -1,38 +1,10 @@
 #!/usr/bin/env python3
-import math
 import threading
-from typing import Tuple
 
 import rospy
 from gazebo_msgs.msg import LinkStates, ModelState
 from gazebo_msgs.srv import SetModelState
-from geometry_msgs.msg import Quaternion
 from std_srvs.srv import Trigger, TriggerResponse
-
-
-def quat_multiply(a: Quaternion, b: Quaternion) -> Quaternion:
-    q = Quaternion()
-    q.w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
-    q.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y
-    q.y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x
-    q.z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w
-    return q
-
-
-def quat_conjugate(q: Quaternion) -> Quaternion:
-    qc = Quaternion()
-    qc.w = q.w
-    qc.x = -q.x
-    qc.y = -q.y
-    qc.z = -q.z
-    return qc
-
-
-def quat_rotate(q: Quaternion, vx: float, vy: float, vz: float) -> Tuple[float, float, float]:
-    vq = Quaternion(x=vx, y=vy, z=vz, w=0.0)
-    q_inv = quat_conjugate(q)
-    out = quat_multiply(quat_multiply(q, vq), q_inv)
-    return float(out.x), float(out.y), float(out.z)
 
 
 class GazeboAttachNode:
@@ -93,14 +65,12 @@ class GazeboAttachNode:
             if attached and self._link_pose is not None:
                 lp = self._link_pose
                 ox, oy, oz = float(self.offset_xyz[0]), float(self.offset_xyz[1]), float(self.offset_xyz[2])
-                rx, ry, rz = quat_rotate(lp.orientation, ox, oy, oz)
-
                 st = ModelState()
                 st.model_name = self.model_name
                 st.reference_frame = "world"
-                st.pose.position.x = lp.position.x + rx
-                st.pose.position.y = lp.position.y + ry
-                st.pose.position.z = lp.position.z + rz
+                st.pose.position.x = lp.position.x + ox
+                st.pose.position.y = lp.position.y + oy
+                st.pose.position.z = lp.position.z + oz
                 st.pose.orientation = lp.orientation
                 try:
                     self._set_state(st)

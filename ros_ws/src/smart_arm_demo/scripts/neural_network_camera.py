@@ -244,19 +244,6 @@ class NeuralNetworkCamera:
                 gt_goal.pose.position.z = float(container_top_z)
                 self.goal_pose_pub.publish(gt_goal)
 
-            now = rospy.Time.now()
-            if (now - self._last_gt_log).to_sec() > 1.0 and gt_cube is not None and gt_goal is not None:
-                rospy.loginfo(
-                    "GT poses: cube(%.3f, %.3f, %.3f) goal(%.3f, %.3f, %.3f)",
-                    gt_cube.pose.position.x,
-                    gt_cube.pose.position.y,
-                    gt_cube.pose.position.z,
-                    gt_goal.pose.position.x,
-                    gt_goal.pose.position.y,
-                    gt_goal.pose.position.z,
-                )
-                self._last_gt_log = now
-
         if bbox is not None:
             x, y, w, h = bbox
             cv2.rectangle(cv_image, (x, y), (x + w, y + h), (255, 0, 0), 3)

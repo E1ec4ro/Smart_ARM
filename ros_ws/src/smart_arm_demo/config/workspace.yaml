@@ -4,7 +4,7 @@ table:
 
 goal_platform:
   center_z: 0.46
-  size_z: 0.06
+  size_z: 0.03
 
 target_cube:
   size: 0.08

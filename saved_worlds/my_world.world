@@ -210,18 +210,18 @@
     <model name='cube_container'>
       <static>1</static>
       <link name='container_link'>
-        <pose>-0.25 0.75 0.46 0 0 0</pose>
+        <pose>-0.28 0.78 0.46 0 0 0</pose>
         <collision name='collision'>
           <geometry>
             <box>
-              <size>0.18 0.18 0.06</size>
+              <size>0.18 0.18 0.03</size>
             </box>
           </geometry>
         </collision>
         <visual name='body'>
           <geometry>
             <box>
-              <size>0.18 0.18 0.06</size>
+              <size>0.18 0.18 0.03</size>
             </box>
           </geometry>
           <material>
@@ -235,7 +235,7 @@
               <size>0.16 0.01 0.001</size>
             </box>
           </geometry>
-          <pose>0 0 0.031 0 0 0.785398</pose>
+          <pose>0 0 0.016 0 0 0.785398</pose>
           <material>
             <ambient>0 1 0 1</ambient>
             <diffuse>0 1 0 1</diffuse>
@@ -247,7 +247,7 @@
               <size>0.16 0.01 0.001</size>
             </box>
           </geometry>
-          <pose>0 0 0.031 0 0 -0.785398</pose>
+          <pose>0 0 0.016 0 0 -0.785398</pose>
           <material>
             <ambient>0 1 0 1</ambient>
             <diffuse>0 1 0 1</diffuse>
