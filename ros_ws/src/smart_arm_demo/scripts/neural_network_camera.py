@@ -11,6 +11,21 @@ from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from gazebo_msgs.msg import ModelStates, LinkStates
 
 
+def param_bool(name: str, default: bool) -> bool:
+    v = rospy.get_param(name, default)
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("1", "true", "yes", "on"):
+            return True
+        if s in ("0", "false", "no", "off"):
+            return False
+    return bool(v)
+
+
 def quat_from_rpy(roll: float, pitch: float, yaw: float) -> Quaternion:
     cr = math.cos(roll * 0.5)
     sr = math.sin(roll * 0.5)
@@ -63,8 +78,8 @@ class NeuralNetworkCamera:
         self.cube_pose_pub = rospy.Publisher("/detected_cube_pose_world", PoseStamped, queue_size=1)
         self.goal_pose_pub = rospy.Publisher("/detected_goal_pose_world", PoseStamped, queue_size=1)
 
-        self.use_gazebo_ground_truth = bool(rospy.get_param("~use_gazebo_ground_truth", True))
-        self.ground_truth_only = bool(rospy.get_param("~ground_truth_only", True))
+        self.use_gazebo_ground_truth = param_bool("~use_gazebo_ground_truth", True)
+        self.ground_truth_only = param_bool("~ground_truth_only", True)
         self.cube_model_name = str(rospy.get_param("~cube_model_name", "target_cube"))
         self.goal_model_name = str(rospy.get_param("~goal_model_name", "cube_container"))
         self.cube_link_name = str(rospy.get_param("~cube_link_name", "target_cube::cube_link"))

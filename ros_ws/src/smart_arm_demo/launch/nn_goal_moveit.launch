@@ -1,0 +1,23 @@
+<launch>
+  <include file="$(find smart_arm_demo)/launch/moveit_move_group.launch" />
+
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_base_link_nn"
+        args="0 0 0.20 0 0 0 world base_link" />
+
+  <node name="nn_goal_moveit"
+        pkg="smart_arm_demo"
+        type="nn_goal_moveit.py"
+        output="screen">
+    <param name="ee_link" value="gripper_base_link"/>
+    <param name="planning_frame" value="base_link"/>
+    <param name="world_frame" value="world"/>
+    <rosparam param="world_to_base_link_xyz">[0.0, 0.0, 0.20]</rosparam>
+    <!-- Нейросеть публикует сюда PoseStamped (frame_id: world или base_link) -->
+    <param name="goal_pose_topic" value="/nn_robot_goal"/>
+    <param name="execute_on_receive" value="true"/>
+    <param name="min_interval_sec" value="0.4"/>
+    <param name="ee_orientation_mode" value="none"/>
+    <param name="allow_replanning" value="true"/>
+    <param name="planning_time" value="15.0"/>
+  </node>
+</launch>

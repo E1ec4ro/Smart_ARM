@@ -21,7 +21,8 @@
         type="gripper_control.py"
         output="screen"
         launch-prefix="bash -c 'sleep 20; $0 $@'">
-    <param name="close_position" value="0.055"/>
+    <!-- finger_*_joint: 0=открыто, ~0.055=полное смыкание. Меньше — слабее сжатие; перенос куба даёт Gazebo /attach, не давление пальцев -->
+    <param name="close_position" value="0.017"/>
     <param name="open_position" value="0.0"/>
   </node>
 
@@ -35,9 +36,18 @@
         type="gazebo_attach_node.py"
         output="screen"
         launch-prefix="bash -c 'sleep 18; $0 $@'">
+    <rosparam file="$(find smart_arm_demo)/config/workspace.yaml" command="load"/>
     <param name="model_name" value="target_cube"/>
     <param name="link_name" value="ur5::gripper_base_link"/>
-    <rosparam param="offset_xyz">[0.0, 0.0, 0.02]</rosparam>
+    <param name="cube_link_name" value="target_cube::cube_link"/>
+    <!-- set_link_state по cube_link — без скачка из‑за model origin ≠ центр куба в SDF -->
+    <param name="use_set_link_state" value="true"/>
+    <!-- true: куб не копирует ориентацию фланца (меньше визуального «улёта») -->
+    <param name="cube_orientation_identity" value="true"/>
+    <!-- offset_xyz — если dynamic=false или нет link_states; при true — смещение из cube_link − фланец -->
+    <rosparam param="offset_xyz">[0.07, 0.0, -0.055]</rosparam>
+    <param name="dynamic_offset_on_attach" value="true"/>
+    <param name="compose_pose_in_world" value="true"/>
   </node>
 
   <node name="pick_place_moveit"
@@ -52,17 +62,51 @@
     <param name="ee_link" value="gripper_base_link"/>
     <param name="planning_frame" value="base_link"/>
     <rosparam param="world_to_base_link_xyz">[0.0, 0.0, 0.20]</rosparam>
+    <!-- down: жёсткая ориентация только на снижении к цели; иначе IK не дотягивается от базы — «застревание у дома» -->
+    <param name="ee_orientation_mode" value="down"/>
+    <param name="down_orientation_for_grasp_only" value="true"/>
+    <!-- RPY в base_link; при неверном наклоне схвата сдвиньте yaw (3-й) или попробуйте [pi,0,0] -->
+    <rosparam param="ee_down_rpy">[0.0, 3.14159265, 0.0]</rosparam>
+    <!-- false: один план на сегмент — меньше «рывков» при перепланировании -->
+    <param name="allow_replanning" value="false"/>
     <param name="lock_wrist" value="false"/>
     <param name="wrist_2_center" value="1.57"/>
     <param name="wrist_3_center" value="0.0"/>
-    <param name="wrist_tol" value="3.14"/>
-    <param name="grasp_height_offset" value="0.00"/>
-    <param name="vel_scale" value="0.15"/>
-    <param name="acc_scale" value="0.15"/>
-    <param name="planning_time" value="8.0"/>
-    <param name="trajectory_time_scale" value="2.5"/>
-    <param name="post_action_pause_s" value="5.0"/>
-    <param name="attach_max_distance_m" value="0.08"/>
+    <param name="wrist_tol" value="0.85"/>
+    <!-- true: стол/пьедестал в PlanningScene — иначе OMPL «режет» сквозь стол, в Gazebo робот упирается -->
+    <param name="enable_scene_obstacles" value="true"/>
+    <param name="scene_collision_padding_m" value="0.02"/>
+    <!-- первый этап _move_via_safe_z не ниже (верх стола + зазор) в base_link -->
+    <param name="enforce_min_safe_z_above_table" value="true"/>
+    <param name="safe_z_clearance_above_table_m" value="0.10"/>
+    <param name="vel_scale" value="0.42"/>
+    <param name="acc_scale" value="0.38"/>
+    <param name="planning_time" value="25.0"/>
+    <param name="planning_attempts" value="12"/>
+    <param name="pos_tol" value="0.005"/>
+    <!-- cartesian_prefer: прямая ЗХ с проверкой коллизий, иначе OMPL — быстрее и предсказуемее, чем чистый OMPL без препятствий -->
+    <param name="planning_method" value="cartesian_prefer"/>
+    <param name="planning_method_lift" value="cartesian_prefer"/>
+    <!-- при необходимости: RRTConnect, RRTstar, PRM — см. ur5_moveit_config/config/ompl_planning.yaml -->
+    <!-- <param name="planner_id" value="RRTConnect"/> -->
+    <param name="cartesian_eef_step_m" value="0.012"/>
+    <param name="cartesian_jump_threshold" value="2.0"/>
+    <param name="cartesian_min_fraction" value="0.75"/>
+    <param name="max_trajectory_points" value="120"/>
+    <param name="max_motion_wait_s" value="45.0"/>
+    <!-- 1.0 — использовать время после TOPT (оптимально по времени в рамках лимитов суставов) -->
+    <param name="trajectory_time_scale" value="1.0"/>
+    <param name="post_action_pause_s" value="0.35"/>
+    <param name="attach_max_distance_m" value="0.22"/>
+    <!-- EE не выше центра куба чем на столько (base_link), иначе виртуальный attach без касания -->
+    <param name="attach_max_dz_above_cube_m" value="0.14"/>
+    <param name="min_clearance_above_cube_top_m" value="0.03"/>
+    <param name="min_approach_above_grasp_m" value="0.16"/>
+    <!-- false: не вызывать /close перед /attach — перенос только через Gazebo attach -->
+    <param name="gripper_close_before_attach" value="false"/>
+    <param name="gripper_settle_before_attach_s" value="0.25"/>
+    <!-- если gripper_close_before_attach=true -->
+    <param name="gripper_settle_after_close_s" value="0.7"/>
     <param name="attach_srv" value="/gazebo_attach/attach"/>
     <param name="detach_srv" value="/gazebo_attach/detach"/>
   </node>

@@ -1,3 +1,4 @@
+# Heights / clamps are applied in scripts/grasp_workspace.py (load_grasp_workspace_config, min_cube_center_z_above_table).
 table:
   center_z: 0.40
   size_z: 0.05
@@ -9,7 +10,12 @@ goal_platform:
 target_cube:
   size: 0.08
 
-approach_height: 0.15
-lift_height: 0.20
+# Высокий подход по XY, затем снижение; attach разрешён только если EE близко к кубу (см. attach_max_dz_above_cube_m)
+approach_height: 0.38
+# Подход к зоне размещения — ниже, иначе UR5 с кубом не достигает цели (OMPL: unable to sample goal)
+place_approach_height: 0.22
+lift_height: 0.30
 place_clearance: 0.01
 
+# Финальная высота EE над центром куба — должна быть < attach_max_dz_above_cube_m (~0.14), иначе /attach отклонится
+grasp_height_offset: 0.10

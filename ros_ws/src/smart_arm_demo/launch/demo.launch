@@ -21,7 +21,7 @@
         type="gripper_control.py"
         output="screen"
         launch-prefix="bash -c 'sleep 20; $0 $@'">
-    <param name="close_position" value="0.055"/>
+    <param name="close_position" value="0.02"/>
     <param name="open_position" value="0.0"/>
   </node>
 </launch>

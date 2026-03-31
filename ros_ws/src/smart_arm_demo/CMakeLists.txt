@@ -13,7 +13,12 @@ catkin_install_python(PROGRAMS
   scripts/neural_network_camera.py
   scripts/gripper_control.py
   scripts/pick_place_moveit.py
+  scripts/nn_goal_moveit.py
   scripts/gazebo_attach_node.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(FILES scripts/grasp_workspace.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

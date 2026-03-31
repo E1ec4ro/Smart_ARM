@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur5">
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur5_robot">
   <xacro:include filename="$(find ur_description)/urdf/inc/ur5_macro.xacro"/>
 
   <material name="mat_black">
@@ -39,12 +39,15 @@
       </geometry>
       <material name="mat_black"/>
     </visual>
+    <!-- No URDF collision on palm: a palm box makes MoveIt report START_STATE_IN_COLLISION at home. -->
+    <!-- Gazebo contact still uses finger collision + attach node. -->
   </link>
 
+  <!-- Без смещения 0.12 м: основание захвата совпадает с фланцем последней оси (wrist_3). При наличии tool0 в вашей сборке можно сменить parent на tool0. -->
   <joint name="gripper_base_joint" type="fixed">
     <parent link="wrist_3_link"/>
     <child link="gripper_base_link"/>
-    <origin xyz="0.12 0 0.00" rpy="0 0 0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
   <gazebo reference="gripper_base_joint">
@@ -65,6 +68,12 @@
       </geometry>
       <material name="mat_green"/>
     </visual>
+    <collision>
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.014 0.006 0.075"/>
+      </geometry>
+    </collision>
   </link>
 
   <link name="finger_right_link">
@@ -80,6 +89,12 @@
       </geometry>
       <material name="mat_green"/>
     </visual>
+    <collision>
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.014 0.006 0.075"/>
+      </geometry>
+    </collision>
   </link>
 
   <joint name="finger_left_joint" type="prismatic">
@@ -123,18 +138,26 @@
   </transmission>
 
   <gazebo reference="finger_left_link">
-    <mu1>50</mu1>
-    <mu2>50</mu2>
-    <kp>100000</kp>
-    <kd>5</kd>
+    <mu1>80</mu1>
+    <mu2>80</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
     <selfCollide>false</selfCollide>
   </gazebo>
 
   <gazebo reference="finger_right_link">
-    <mu1>50</mu1>
-    <mu2>50</mu2>
-    <kp>100000</kp>
-    <kd>5</kd>
+    <mu1>80</mu1>
+    <mu2>80</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <selfCollide>false</selfCollide>
+  </gazebo>
+
+  <gazebo reference="gripper_base_link">
+    <mu1>80</mu1>
+    <mu2>80</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
     <selfCollide>false</selfCollide>
   </gazebo>
 </robot>
