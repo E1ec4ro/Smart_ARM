@@ -3,9 +3,11 @@ import copy
 import math
 import os
 import sys
+import threading
 import time
+import traceback
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Iterator, List, Optional, Tuple
 
 import rospy
 import moveit_commander
@@ -24,7 +26,7 @@ from geometry_msgs.msg import Pose, PoseStamped, Quaternion
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, TriggerResponse
 from moveit_msgs.msg import RobotState, Constraints, JointConstraint
 
 
@@ -206,8 +208,14 @@ class PickPlaceMoveIt:
 
         self._apply_path_constraints()
 
+        self._run_lock = threading.Lock()
+        self._place_descent_active = False
+
+        rospy.Service("~run_pick_place", Trigger, self._cb_run_pick_place)
+
         rospy.loginfo(
-            "Pick&Place ready. group=%s, planning_frame=%s, ee=%s, gripper_close_before_attach=%s",
+            "Pick&Place ready. group=%s, planning_frame=%s, ee=%s, gripper_close_before_attach=%s. "
+            "Повтор цикла: rosservice call .../pick_place_moveit/run_pick_place",
             self.group_name,
             self.group.get_planning_frame(),
             self.group.get_end_effector_link(),
@@ -363,6 +371,17 @@ class PickPlaceMoveIt:
         if not resp.success:
             raise RuntimeError(f"Service {service_name} failed: {resp.message}")
 
+    def _cb_run_pick_place(self, _req) -> TriggerResponse:
+        """Повторить полный цикл pick&place (ожидание поз, pick, place, при необходимости домой)."""
+        with self._run_lock:
+            try:
+                self.run_once()
+                return TriggerResponse(True, "pick&place completed")
+            except Exception as e:
+                rospy.logerr("run_pick_place: %s", e)
+                rospy.logerr("%s", traceback.format_exc())
+                return TriggerResponse(False, str(e))
+
     def _publish_trajectory(self, traj: JointTrajectory) -> None:
         self.pub_arm.publish(traj)
 
@@ -391,6 +410,83 @@ class PickPlaceMoveIt:
         out.pose.position.z = float(ps.pose.position.z - dz)
         out.pose.orientation.w = 1.0
         return out
+
+    def _clamp_pose_base_z(self, ps: PoseStamped, label: str) -> PoseStamped:
+        """
+        Ограничить z в base_link для фазы place: слишком высокая цель = пустой план MoveIt, робот «замирает».
+        """
+        out = copy.deepcopy(ps)
+        z = float(out.pose.position.z)
+        zmax = float(rospy.get_param("~place_max_z_base", 0.92))
+        zmin = float(rospy.get_param("~place_min_z_base", 0.0))
+        if z > zmax:
+            rospy.logwarn(
+                "%s: z=%.3f в %s > place_max_z_base=%.3f — снижаем (досягаемость/рациональный подход)",
+                label,
+                z,
+                self.planning_frame,
+                zmax,
+            )
+            out.pose.position.z = zmax
+        if zmin > 1e-6 and z < zmin:
+            rospy.logwarn("%s: z=%.3f < place_min_z_base=%.3f — поднимаем", label, z, zmin)
+            out.pose.position.z = zmin
+        return out
+
+    def _ensure_place_below_pre(self, pre_b: PoseStamped, place_b: PoseStamped) -> PoseStamped:
+        """
+        Если оба z обрезаны place_max_z_base, pre и place могут совпасть — тогда _move_via_safe_z не даёт
+        второго сегмента вниз и робот «висит» над целью. Принудительно: place_z < pre_z.
+        """
+        out = copy.deepcopy(place_b)
+        pre_z = float(pre_b.pose.position.z)
+        pl_z = float(out.pose.position.z)
+        min_below = float(rospy.get_param("~place_min_below_pre_m", 0.06))
+        eps = 1e-4
+        if pl_z < pre_z - eps:
+            return out
+        new_z = pre_z - min_below
+        zfloor = float(rospy.get_param("~place_min_z_base", 0.0))
+        if zfloor > 1e-6:
+            new_z = max(new_z, zfloor)
+        else:
+            new_z = max(new_z, self._table_top_z_in_planning_frame() + 0.02)
+        rospy.logwarn(
+            "place z=%.4f не ниже pre z=%.4f (часто общий place_max_z_base) — place_z → %.4f для снижения к укладке",
+            pl_z,
+            pre_z,
+            new_z,
+        )
+        out.pose.position.z = new_z
+        return out
+
+    def _effective_place_target_z(self, z_place: float, pre_z: float) -> float:
+        """
+        Сжимает цель z укладки: завышенная vision/clamp (place_max_z_base) даёт z_final выше EE —
+        тогда cz <= z_final+eps срабатывает сразу и снижение не выполняется вообще.
+        Потолок: верх столешницы в planning_frame + place_ee_max_above_table_m; пол: table + зазор.
+        """
+        table_top = self._table_top_z_in_planning_frame()
+        margin = float(rospy.get_param("~place_ee_max_above_table_m", 0.42))
+        min_below = float(rospy.get_param("~place_min_below_pre_m", 0.06))
+        z_floor = float(rospy.get_param("~place_min_z_base", 0.0))
+        min_above = float(rospy.get_param("~place_min_height_above_table_m", 0.028))
+        z_floor_eff = max(z_floor, table_top + min_above)
+        z_cap = table_top + margin
+        z = float(z_place)
+        z = min(z, pre_z - min_below, z_cap)
+        z = max(z, z_floor_eff)
+        z = min(z, pre_z - min_below)
+        if abs(z - z_place) > 1e-4:
+            rospy.logwarn(
+                "place target z: %.4f → %.4f (table_top=%.4f z_cap=%.4f pre_z=%.4f)",
+                z_place,
+                z,
+                table_top,
+                z_cap,
+                pre_z,
+            )
+        return z
 
     def _thin_joint_trajectory(self, jt: JointTrajectory) -> JointTrajectory:
         """Декартов путь может дать сотни точек → долгое ожидание. OMPL+TOPT обычно <100 точек — не трогаем."""
@@ -428,6 +524,22 @@ class PickPlaceMoveIt:
             pt.time_from_start = rospy.Duration(float((i + 1) * dt))
         return out
 
+    def _make_cartesian_pose(self, x: float, y: float, z: float, ori: str, ee_ref: Pose) -> Pose:
+        """Ориентация ЗХ для декартова пути (ori как в _plan_segment / safe_z)."""
+        p = Pose()
+        p.position.x = float(x)
+        p.position.y = float(y)
+        p.position.z = float(z)
+        if ori == "down" and self._quat_down is not None:
+            p.orientation = copy.deepcopy(self._quat_down)
+        elif ori == "home" or (
+            ori == "auto" and self.ee_orientation_mode == "home" and self._ee_orientation_ref is not None
+        ):
+            p.orientation = copy.deepcopy(self._ee_orientation_ref)
+        else:
+            p.orientation = copy.deepcopy(ee_ref.orientation)
+        return p
+
     def _try_cartesian_straight(self, x: float, y: float, z: float, ori: str) -> tuple:
         """
         Прямая в декартовом пространстве (позиция ЗХ линейно от текущей к цели).
@@ -440,25 +552,19 @@ class PickPlaceMoveIt:
             except Exception:
                 self._set_moveit_start_state_home()
             cp = self.group.get_current_pose()
-            end = Pose()
-            end.position.x = float(x)
-            end.position.y = float(y)
-            end.position.z = float(z)
-            if ori == "down" and self._quat_down is not None:
-                end.orientation = copy.deepcopy(self._quat_down)
-            elif ori == "home" or (
-                ori == "auto" and self.ee_orientation_mode == "home" and self._ee_orientation_ref is not None
-            ):
-                end.orientation = copy.deepcopy(self._ee_orientation_ref)
-            else:
-                end.orientation = copy.deepcopy(cp.pose.orientation)
+            end = self._make_cartesian_pose(x, y, z, ori, cp.pose)
 
             eef_step = float(rospy.get_param("~cartesian_eef_step_m", 0.005))
             jump = float(rospy.get_param("~cartesian_jump_threshold", 2.0))
             avoid = param_bool("~cartesian_avoid_collisions", True)
+            if self._place_descent_active and param_bool("~place_cartesian_allow_collisions", False):
+                avoid = False
             waypoints = [end]
             plan, fraction = self.group.compute_cartesian_path(waypoints, eef_step, jump, avoid_collisions=avoid)
-            min_frac = float(rospy.get_param("~cartesian_min_fraction", 0.82))
+            if self._place_descent_active:
+                min_frac = float(rospy.get_param("~place_cartesian_min_fraction", 0.62))
+            else:
+                min_frac = float(rospy.get_param("~cartesian_min_fraction", 0.82))
             if fraction + 1e-6 < min_frac:
                 rospy.logwarn("cartesian: fraction=%.3f < %.3f", fraction, min_frac)
                 return None, False
@@ -472,6 +578,48 @@ class PickPlaceMoveIt:
             return plan, True
         except Exception as e:
             rospy.logwarn("compute_cartesian_path failed: %s", e)
+            return None, False
+
+    def _try_cartesian_polyline(self, segments: List[Tuple[float, float, float, str]]) -> tuple:
+        """
+        Одна декартова траектория через несколько waypoints (ломаная в ЗХ — короче, чем два отдельных плана).
+        segments: [(x,y,z, ori), ...] от текущего положения через каждую точку по порядку.
+        """
+        if not segments:
+            return None, False
+        try:
+            self.group.clear_pose_targets()
+            try:
+                self.group.set_start_state_to_current_state()
+            except Exception:
+                self._set_moveit_start_state_home()
+            cp = self.group.get_current_pose()
+            ee_ref = cp.pose
+            waypoints = [self._make_cartesian_pose(x, y, z, ori, ee_ref) for x, y, z, ori in segments]
+            eef_step = float(rospy.get_param("~cartesian_eef_step_m", 0.005))
+            jump = float(rospy.get_param("~cartesian_jump_threshold", 2.0))
+            avoid = param_bool("~cartesian_avoid_collisions", True)
+            if self._place_descent_active and param_bool("~place_cartesian_allow_collisions", False):
+                avoid = False
+            plan, fraction = self.group.compute_cartesian_path(waypoints, eef_step, jump, avoid_collisions=avoid)
+            _min_cart = float(rospy.get_param("~cartesian_min_fraction", 0.75))
+            if self._place_descent_active:
+                min_frac = float(rospy.get_param("~place_cartesian_polyline_min_fraction", 0.52))
+            else:
+                min_frac = float(rospy.get_param("~cartesian_polyline_min_fraction", _min_cart))
+            if fraction + 1e-6 < min_frac:
+                rospy.logwarn("cartesian polyline: fraction=%.3f < %.3f waypoints=%d", fraction, min_frac, len(waypoints))
+                return None, False
+            try:
+                jt = plan.joint_trajectory
+            except Exception:
+                jt = None
+            if jt is None or len(jt.points) == 0:
+                return None, False
+            rospy.loginfo("cartesian polyline OK: fraction=%.3f points=%d waypoints=%d", fraction, len(jt.points), len(waypoints))
+            return plan, True
+        except Exception as e:
+            rospy.logwarn("compute_cartesian_path (polyline) failed: %s", e)
             return None, False
 
     def _plan_segment(self, x: float, y: float, z: float, ori: str = "auto", method_override: Optional[str] = None):
@@ -596,9 +744,57 @@ class PickPlaceMoveIt:
         else:
             ori1 = "auto"
             ori2 = "auto"
+        if abs(fz - fs) <= 1e-3:
+            self._execute_plan(self._plan_segment(x, y, fs, ori=ori1, method_override=planning_method_override))
+            return
+        method_eff = (planning_method_override or "").strip().lower()
+        if not method_eff:
+            method_eff = str(rospy.get_param("~planning_method", "cartesian")).strip().lower()
+        if param_bool("~cartesian_safe_z_single_plan", True) and method_eff in ("cartesian", "linear", "cartesian_prefer"):
+            plan, ok = self._try_cartesian_polyline([(x, y, fs, ori1), (x, y, fz, ori2)])
+            if ok and plan is not None:
+                self._execute_plan(plan)
+                return
+            rospy.loginfo("декартова полилиния (safe_z→цель) не собралась — два отдельных сегмента")
         self._execute_plan(self._plan_segment(x, y, fs, ori=ori1, method_override=planning_method_override))
-        if abs(fz - fs) > 1e-3:
-            self._execute_plan(self._plan_segment(x, y, fz, ori=ori2, method_override=planning_method_override))
+        self._execute_plan(self._plan_segment(x, y, fz, ori=ori2, method_override=planning_method_override))
+
+    def _try_place_descent_vertical_polyline(self, z_goal: float) -> bool:
+        """
+        Только Z при текущих X,Y (где реально висит схват после переноса). Мелкие waypoints — выше fraction.
+        """
+        if not param_bool("~place_prefer_vertical_polyline_first", True):
+            return False
+        try:
+            self.group.clear_pose_targets()
+            try:
+                self.group.set_start_state_to_current_state()
+            except Exception:
+                pass
+            cp = self.group.get_current_pose()
+            x = float(cp.pose.position.x)
+            y = float(cp.pose.position.y)
+            z0 = float(cp.pose.position.z)
+        except Exception as e:
+            rospy.logwarn("vertical polyline: pose: %s", e)
+            return False
+        if z_goal >= z0 - 1e-6:
+            return True
+        sub = float(rospy.get_param("~place_vertical_cartesian_substep_m", 0.018))
+        n = max(int(math.ceil((z0 - z_goal) / sub)), 1)
+        n = min(n, int(rospy.get_param("~place_vertical_cartesian_max_segments", 32)))
+        segments: List[Tuple[float, float, float, str]] = []
+        for i in range(1, n + 1):
+            t = float(i) / float(n)
+            z = z0 + (z_goal - z0) * t
+            segments.append((x, y, z, "none"))
+        plan, ok = self._try_cartesian_polyline(segments)
+        if not ok or plan is None:
+            rospy.logwarn("vertical polyline: не собрана (z %.4f → %.4f)", z0, z_goal)
+            return False
+        self._execute_plan(plan)
+        rospy.loginfo("place vertical polyline OK: z %.4f → %.4f (%d сегм.)", z0, z_goal, n)
+        return True
 
     def _move_via_safe_z_place_with_fallback(self, x: float, y: float, z: float, safe_z: float, step_name: str) -> None:
         """Place phase: OMPL often fails if goal z is too high; retry with lower target."""
@@ -610,6 +806,210 @@ class PickPlaceMoveIt:
             z2 = float(z) - dz
             safe_z2 = float(max(safe_z - dz, z2))
             self._move_via_safe_z(x, y, z2, safe_z2)
+
+    def _plan_execute_place_step(self, gx: float, gy: float, zn: float, planning_method_override: Optional[str] = None) -> None:
+        """
+        Один шаг к (gx,gy,zn). Сначала только позиция (none) — IK чаще находит сгиб локтя/плеча;
+        затем жёсткий down; затем OMPL. Жёсткий down с первого шага часто даёт «зависание» над целью.
+        Дополнительно: ослабленные допуски, joint-space план, прямой шаг на контроллер (симуляция).
+        """
+        if self._place_descent_active and param_bool("~place_prefer_vertical_polyline_first", True):
+            try:
+                if self._try_place_descent_vertical_polyline(zn):
+                    rospy.loginfo("place step OK (vertical polyline): z=%.4f", zn)
+                    return
+            except Exception as e:
+                rospy.logwarn("vertical polyline place step: %s", e)
+        md = str(rospy.get_param("~planning_method_place_descent", "cartesian_prefer")).strip().lower()
+        mo_def = planning_method_override if (planning_method_override and str(planning_method_override).strip()) else md
+        attempts: List[Tuple[str, Optional[str]]] = [
+            ("none", mo_def),
+            ("down", mo_def),
+            ("none", "ompl"),
+            ("down", "ompl"),
+        ]
+        last_err: Optional[Exception] = None
+        for ori, method in attempts:
+            try:
+                plan = self._plan_segment(gx, gy, zn, ori=ori, method_override=method)
+                self._execute_plan(plan)
+                rospy.loginfo("place step OK: z=%.4f ori=%s method=%s", zn, ori, method)
+                return
+            except Exception as e:
+                last_err = e
+                rospy.logwarn("place step z=%.4f ori=%s method=%s: %s", zn, ori, method, e)
+        if param_bool("~place_relaxed_tol_fallback", True):
+            old_pos = self.group.get_goal_position_tolerance()
+            old_ori = self.group.get_goal_orientation_tolerance()
+            try:
+                self.group.set_goal_position_tolerance(float(rospy.get_param("~place_relaxed_pos_tol", 0.028)))
+                self.group.set_goal_orientation_tolerance(float(rospy.get_param("~place_relaxed_ori_tol", 0.15)))
+                for ori, method in attempts:
+                    try:
+                        plan = self._plan_segment(gx, gy, zn, ori=ori, method_override=method)
+                        self._execute_plan(plan)
+                        rospy.loginfo("place step OK (relaxed tol): z=%.4f ori=%s method=%s", zn, ori, method)
+                        return
+                    except Exception as e:
+                        last_err = e
+                        rospy.logwarn("place relaxed z=%.4f ori=%s method=%s: %s", zn, ori, method, e)
+            finally:
+                self.group.set_goal_position_tolerance(old_pos)
+                self.group.set_goal_orientation_tolerance(old_ori)
+        try:
+            self._try_joint_space_place_fallback()
+            rospy.loginfo("place step OK (joint-space fallback), target z=%.4f", zn)
+            return
+        except Exception as e:
+            last_err = e
+            rospy.logwarn("joint-space fallback failed: %s", e)
+        try:
+            if self._direct_joint_nudge_downward_once():
+                rospy.loginfo("place step OK (direct joint nudge), target z=%.4f", zn)
+                return
+        except Exception as e:
+            last_err = e
+            rospy.logwarn("direct joint nudge failed: %s", e)
+        if last_err is not None:
+            raise last_err
+        raise RuntimeError("place step: empty failure state")
+
+    def _try_joint_space_place_fallback(self) -> None:
+        """Малые шаги в joint-space через OMPL, когда pose IK/картезиан не дают траектории вниз."""
+        if not param_bool("~place_joint_fallback_enable", True):
+            raise RuntimeError("place_joint_fallback_enable=false")
+        max_n = max(int(rospy.get_param("~place_joint_fallback_nudges", 10)), 1)
+        d_sl = float(rospy.get_param("~place_joint_fallback_delta_shoulder_lift", -0.07))
+        d_el = float(rospy.get_param("~place_joint_fallback_delta_elbow", 0.09))
+        if param_bool("~place_joint_fallback_invert_sign", False):
+            d_sl, d_el = -d_sl, -d_el
+        names = list(self.group.get_active_joints())
+        for k in range(max_n):
+            scale = 1.0 + 0.22 * float(k)
+            self.group.clear_pose_targets()
+            self.group.clear_path_constraints()
+            try:
+                self.group.set_start_state_to_current_state()
+            except Exception:
+                pass
+            q = list(self.group.get_current_joint_values())
+            for jn, dj in (("shoulder_lift_joint", d_sl), ("elbow_joint", d_el)):
+                if jn in names:
+                    q[names.index(jn)] += dj * scale
+            self.group.set_joint_value_target(q)
+            plan = self.group.plan()
+            try:
+                jt = plan.joint_trajectory
+            except Exception:
+                jt = plan[1].joint_trajectory if isinstance(plan, (list, tuple)) and len(plan) > 1 else None
+            if jt is not None and len(jt.points) > 0:
+                self._execute_plan(plan)
+                self._apply_path_constraints()
+                return
+            rospy.sleep(0.06)
+        raise RuntimeError("joint-space fallback: no plan after nudges")
+
+    def _current_joint_positions_for_controller(self) -> List[float]:
+        act = list(self.group.get_active_joints())
+        q = list(self.group.get_current_joint_values())
+        name_to_q = dict(zip(act, q))
+        out: List[float] = []
+        for jn in self.joint_names:
+            if jn not in name_to_q:
+                raise RuntimeError(f"joint {jn} not in active joints {act}")
+            out.append(float(name_to_q[jn]))
+        return out
+
+    def _publish_trajectory_direct(self, positions: List[float], duration: float) -> None:
+        if len(positions) != len(self.joint_names):
+            raise RuntimeError("joint positions length != joint_names")
+        msg = JointTrajectory()
+        msg.joint_names = list(self.joint_names)
+        pt = JointTrajectoryPoint()
+        pt.positions = [float(x) for x in positions]
+        pt.time_from_start = rospy.Duration(duration)
+        msg.points = [pt]
+        self.pub_arm.publish(msg)
+        rospy.sleep(max(duration + 0.1, 0.35))
+        self._pause("after_direct_joint")
+
+    def _direct_joint_nudge_downward_once(self) -> bool:
+        """Последний резерв: короткая траектория на arm_controller без collision-check MoveIt (только сим)."""
+        if not param_bool("~place_direct_joint_nudge_enable", True):
+            return False
+        z0 = float(self.group.get_current_pose().pose.position.z)
+        d_sl0 = float(rospy.get_param("~place_direct_joint_nudge_shoulder_lift", -0.06))
+        d_el0 = float(rospy.get_param("~place_direct_joint_nudge_elbow", 0.085))
+        if param_bool("~place_direct_joint_nudge_invert", False):
+            d_sl0, d_el0 = -d_sl0, -d_el0
+        try_both = param_bool("~place_direct_joint_nudge_try_both", True)
+        for flip in (False, True):
+            if flip and not try_both:
+                break
+            d_sl, d_el = (-d_sl0, -d_el0) if flip else (d_sl0, d_el0)
+            pos = self._current_joint_positions_for_controller()
+            names = list(self.joint_names)
+            for jn, dj in (("shoulder_lift_joint", d_sl), ("elbow_joint", d_el)):
+                if jn in names:
+                    pos[names.index(jn)] += dj
+            dur = float(rospy.get_param("~place_direct_joint_nudge_duration_s", 0.52))
+            self._publish_trajectory_direct(pos, dur)
+            self._apply_path_constraints()
+            z1 = float(self.group.get_current_pose().pose.position.z)
+            rospy.loginfo("direct joint nudge EE z: %.4f -> %.4f (flip=%s)", z0, z1, flip)
+            if z1 < z0 - 5.0e-4:
+                return True
+            z0 = z1
+        return False
+
+    def _descend_to_place_height(
+        self,
+        gx: float,
+        gy: float,
+        z_final: float,
+        pre_z: float,
+        planning_method_override: Optional[str] = None,
+    ) -> None:
+        """
+        Снижение над (gx,gy) до z_final малыми шагами по Z; на каждом шаге — несколько попыток IK (none/down/OMPL).
+        pre_z — высота pre_place в base_link; нужна для _effective_place_target_z (анти «ложный успех»).
+        """
+        z_final = self._effective_place_target_z(z_final, pre_z)
+        self._place_descent_active = True
+        if param_bool("~place_smooth_descent", True):
+            dz = float(rospy.get_param("~place_descent_step_m", 0.032))
+        else:
+            dz = float(rospy.get_param("~place_descent_step_coarse_m", 0.055))
+        eps = float(rospy.get_param("~place_descent_eps_m", 0.006))
+        max_iter = int(rospy.get_param("~place_descent_max_steps", 48))
+        try:
+            for i in range(max_iter):
+                cp = self.group.get_current_pose().pose.position
+                cz = float(cp.z)
+                if cz <= z_final + eps:
+                    rospy.loginfo("place descent: достигнуто z=%.4f (цель %.4f)", cz, z_final)
+                    return
+                next_z = max(z_final, cz - dz)
+                rospy.loginfo("place descent: шаг %d z %.4f → %.4f (цель %.4f)", i + 1, cz, next_z, z_final)
+                if param_bool("~place_descent_keep_current_xy", True):
+                    gx_eff = float(cp.x)
+                    gy_eff = float(cp.y)
+                    if abs(gx_eff - gx) > 0.012 or abs(gy_eff - gy) > 0.012:
+                        rospy.logwarn(
+                            "place descent: XY из топика (%.4f,%.4f) ≠ текущие ЗХ (%.4f,%.4f) — снижение только по Z",
+                            gx,
+                            gy,
+                            gx_eff,
+                            gy_eff,
+                        )
+                else:
+                    gx_eff, gy_eff = gx, gy
+                self._plan_execute_place_step(gx_eff, gy_eff, next_z, planning_method_override=planning_method_override)
+            raise RuntimeError(
+                f"place descent: за {max_iter} шагов не достигнуто z<={z_final + eps:.4f} (текущее z проверьте визуально)"
+            )
+        finally:
+            self._place_descent_active = False
 
     def _execute_plan(self, plan) -> None:
         try:
@@ -633,7 +1033,10 @@ class PickPlaceMoveIt:
         self._pause("after_motion")
 
     def _pause(self, reason: str) -> None:
-        s = float(self.post_action_pause_s)
+        if self._place_descent_active:
+            s = float(rospy.get_param("~post_action_pause_descent_s", 0.08))
+        else:
+            s = float(self.post_action_pause_s)
         if s <= 0.0:
             return
         rospy.sleep(s)
@@ -731,21 +1134,29 @@ class PickPlaceMoveIt:
             cur_z = float(ee.z)
             dz_lift = float(self.cfg.lift_height) - float(self.grasp_height_offset)
             z_tgt = float(ee.z) + dz_lift
+            _pm = str(rospy.get_param("~planning_method", "cartesian_prefer")).strip().lower()
+            _lift_m = str(rospy.get_param("~planning_method_lift", _pm)).strip().lower()
             self._move_via_safe_z(
                 float(ee.x),
                 float(ee.y),
                 z_tgt,
                 safe_z=max(cur_z, z_tgt),
-                planning_method_override=str(rospy.get_param("~planning_method_lift", "ompl")).strip().lower(),
+                planning_method_override=_lift_m,
             )
 
     def _run_place_phase(self, steps: StepRunner, goal: PoseStamped) -> None:
+        # Свежая цель после pick (долгий подъём): иначе устаревший goal → нереализуемая точка.
+        try:
+            goal = self._wait_for_pose("goal", timeout_s=10.0)
+        except Exception as e:
+            rospy.logwarn("не удалось обновить goal перед place (%s), используем переданный pose", e)
+
         pre_place = self._make_pose(
             goal.pose.position.x,
             goal.pose.position.y,
             goal.pose.position.z + self.cfg.place_approach_height,
         )
-        pre_place_b = self._world_to_base(pre_place)
+        pre_place_b = self._clamp_pose_base_z(self._world_to_base(pre_place), "pre_place")
         with steps.step("move_pre_place"):
             cur_z = float(self.group.get_current_pose().pose.position.z)
             self._move_via_safe_z_place_with_fallback(
@@ -756,20 +1167,40 @@ class PickPlaceMoveIt:
                 step_name="move_pre_place",
             )
 
-        place = self._make_pose(
-            goal.pose.position.x,
-            goal.pose.position.y,
-            goal.pose.position.z + (self.cfg.cube_size * 0.5) + self.cfg.place_clearance,
-        )
-        place_b = self._world_to_base(place)
+        base_clear = float(self.cfg.cube_size * 0.5) + self.cfg.place_clearance
+        dz_fb = float(rospy.get_param("~place_z_fallback_delta_m", 0.06))
+        n_try = max(int(rospy.get_param("~place_z_fallback_attempts", 4)), 1)
         with steps.step("move_place"):
-            cur_z = float(self.group.get_current_pose().pose.position.z)
-            self._move_via_safe_z(
-                float(place_b.pose.position.x),
-                float(place_b.pose.position.y),
-                float(place_b.pose.position.z),
-                safe_z=max(cur_z, float(pre_place_b.pose.position.z)),
-            )
+            last_err = None
+            for attempt in range(n_try):
+                place = self._make_pose(
+                    goal.pose.position.x,
+                    goal.pose.position.y,
+                    goal.pose.position.z + base_clear - float(attempt) * dz_fb,
+                )
+                place_b = self._clamp_pose_base_z(self._world_to_base(place), "move_place")
+                place_b = self._ensure_place_below_pre(pre_place_b, place_b)
+                try:
+                    # Всегда пошаговое снижение: один большой _move_via_safe_z с down часто не даёт согнуть локоть (IK).
+                    self._descend_to_place_height(
+                        float(place_b.pose.position.x),
+                        float(place_b.pose.position.y),
+                        float(place_b.pose.position.z),
+                        float(pre_place_b.pose.position.z),
+                    )
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    rospy.logwarn(
+                        "move_place попытка %d/%d не удалась (%s); z_world −= %.3f м",
+                        attempt + 1,
+                        n_try,
+                        e,
+                        dz_fb,
+                    )
+            if last_err is not None:
+                raise last_err
 
         with steps.step("detach_cube"):
             self._call_trigger(self.detach_srv)
@@ -784,7 +1215,7 @@ class PickPlaceMoveIt:
             goal.pose.position.y,
             goal.pose.position.z + self.cfg.place_approach_height,
         )
-        retreat_b = self._world_to_base(retreat)
+        retreat_b = self._clamp_pose_base_z(self._world_to_base(retreat), "retreat")
         with steps.step("move_retreat"):
             cur_z = float(self.group.get_current_pose().pose.position.z)
             self._move_via_safe_z(
@@ -843,15 +1274,36 @@ class PickPlaceMoveIt:
             )
 
         self._run_pick_phase(steps, cube)
-        self._run_place_phase(steps, goal)
+        try:
+            self._run_place_phase(steps, goal)
+        except Exception as e:
+            rospy.logerr("фаза place завершилась с ошибкой: %s", e)
+            if param_bool("~go_home_on_place_failure", True):
+                with steps.step("go_home_after_place_error"):
+                    try:
+                        self._send_home()
+                        self._pause("after_go_home_error")
+                    except Exception as e2:
+                        rospy.logwarn("go_home после ошибки place: %s", e2)
+            raise
+        if param_bool("~go_home_after_place", True):
+            with steps.step("go_home_after_place"):
+                self._send_home()
+                self._pause("after_go_home_end")
 
-        rospy.loginfo("Pick&place completed.")
+        rospy.loginfo("Pick&place завершён. Ожидание: rosservice call .../run_pick_place или spin.")
 
     def spin(self) -> None:
         rospy.sleep(1.0)
         run_once = param_bool("~run_once", True)
         if run_once:
-            self.run_once()
+            try:
+                with self._run_lock:
+                    self.run_once()
+            except Exception as e:
+                rospy.logerr("pick&place остановлен с ошибкой: %s", e)
+                rospy.logerr("%s", traceback.format_exc())
+            rospy.loginfo("Узел активен. Повтор: rosservice call <ns>/pick_place_moveit/run_pick_place")
             rospy.spin()
         else:
             rate = rospy.Rate(0.1)

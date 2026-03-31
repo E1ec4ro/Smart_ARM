@@ -12,8 +12,8 @@ target_cube:
 
 # Высокий подход по XY, затем снижение; attach разрешён только если EE близко к кубу (см. attach_max_dz_above_cube_m)
 approach_height: 0.38
-# Подход к зоне размещения — ниже, иначе UR5 с кубом не достигает цели (OMPL: unable to sample goal)
-place_approach_height: 0.22
+# Подход к зоне размещения: слишком большое значение + z контейнера → цель вне досягаемости, робот «замирает» после pick
+place_approach_height: 0.14
 lift_height: 0.30
 place_clearance: 0.01
 

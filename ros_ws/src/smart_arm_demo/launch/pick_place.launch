@@ -12,6 +12,8 @@
     <param name="ground_truth_only" value="true"/>
     <param name="cube_link_name" value="target_cube::cube_link"/>
     <param name="goal_link_name" value="cube_container::container_link"/>
+    <!-- true: Z цели из Gazebo link (реальная площадка); false — фикс. высота из yaml (часто рассинхрон с симуляцией) -->
+    <param name="goal_pose_keep_link_z" value="true"/>
   </node>
 
   <include file="$(find smart_arm_demo)/launch/camera_view.launch" />
@@ -84,19 +86,23 @@
     <param name="planning_time" value="25.0"/>
     <param name="planning_attempts" value="12"/>
     <param name="pos_tol" value="0.005"/>
-    <!-- cartesian_prefer: прямая ЗХ с проверкой коллизий, иначе OMPL — быстрее и предсказуемее, чем чистый OMPL без препятствий -->
+    <!-- cartesian_prefer: сначала прямые/ломаные в ЗХ (предсказуемо), иначе OMPL -->
     <param name="planning_method" value="cartesian_prefer"/>
     <param name="planning_method_lift" value="cartesian_prefer"/>
-    <!-- при необходимости: RRTConnect, RRTstar, PRM — см. ur5_moveit_config/config/ompl_planning.yaml -->
-    <!-- <param name="planner_id" value="RRTConnect"/> -->
-    <param name="cartesian_eef_step_m" value="0.012"/>
+    <!-- один compute_cartesian_path: (x,y,safe_z) → (x,y,z) без лишнего стопа между сегментами -->
+    <param name="cartesian_safe_z_single_plan" value="true"/>
+    <!-- мельче шаг — ближе к прямой в ЗХ; полилиния чуть мягче порог fraction -->
+    <param name="cartesian_eef_step_m" value="0.008"/>
+    <param name="cartesian_min_fraction" value="0.78"/>
+    <param name="cartesian_polyline_min_fraction" value="0.72"/>
     <param name="cartesian_jump_threshold" value="2.0"/>
-    <param name="cartesian_min_fraction" value="0.75"/>
+    <!-- при неудаче OMPL: RRTstar/PRMstar часто короче RRTConnect, но медленнее (см. ompl_planning.yaml) -->
+    <!-- <param name="planner_id" value="RRTstar"/> -->
     <param name="max_trajectory_points" value="120"/>
     <param name="max_motion_wait_s" value="45.0"/>
     <!-- 1.0 — использовать время после TOPT (оптимально по времени в рамках лимитов суставов) -->
     <param name="trajectory_time_scale" value="1.0"/>
-    <param name="post_action_pause_s" value="0.35"/>
+    <param name="post_action_pause_s" value="0.2"/>
     <param name="attach_max_distance_m" value="0.22"/>
     <!-- EE не выше центра куба чем на столько (base_link), иначе виртуальный attach без касания -->
     <param name="attach_max_dz_above_cube_m" value="0.14"/>
@@ -109,6 +115,41 @@
     <param name="gripper_settle_after_close_s" value="0.7"/>
     <param name="attach_srv" value="/gazebo_attach/attach"/>
     <param name="detach_srv" value="/gazebo_attach/detach"/>
+    <!-- place: цели в base_link; если pre и place оба упираются в max, без place_min_below_pre робот не снижается -->
+    <!-- чуть ниже потолок place — иначе pre/place часто упираются в max и робот «висит» над площадкой -->
+    <param name="place_max_z_base" value="0.84"/>
+    <!-- потолок EE над столешницей (base_link), см. _effective_place_target_z — иначе «ложный успех» без снижения -->
+    <param name="place_ee_max_above_table_m" value="0.42"/>
+    <param name="place_min_height_above_table_m" value="0.028"/>
+    <param name="place_min_below_pre_m" value="0.08"/>
+    <param name="place_z_fallback_delta_m" value="0.06"/>
+    <param name="place_z_fallback_attempts" value="4"/>
+    <!-- place: пошаговое снижение; smooth=true — мельче шаг; на каждом шаге сначала IK без жёсткого down -->
+    <param name="place_smooth_descent" value="true"/>
+    <param name="place_descent_step_m" value="0.04"/>
+    <param name="place_descent_step_coarse_m" value="0.055"/>
+    <!-- при ошибке укладки всё равно попытаться уехать домой (осторожно, если куб ещё на схвате) -->
+    <param name="go_home_on_place_failure" value="true"/>
+    <param name="planning_method_place_descent" value="cartesian_prefer"/>
+    <param name="go_home_after_place" value="true"/>
+    <param name="post_action_pause_descent_s" value="0.08"/>
+    <!-- запасной путь укладки: ослабленные допуски → joint-space OMPL → прямой шаг на контроллер -->
+    <param name="place_relaxed_tol_fallback" value="true"/>
+    <param name="place_relaxed_pos_tol" value="0.028"/>
+    <param name="place_relaxed_ori_tol" value="0.15"/>
+    <param name="place_joint_fallback_enable" value="true"/>
+    <param name="place_joint_fallback_nudges" value="10"/>
+    <param name="place_direct_joint_nudge_enable" value="true"/>
+    <param name="place_direct_joint_nudge_duration_s" value="0.52"/>
+    <param name="place_direct_joint_nudge_try_both" value="true"/>
+    <!-- снижение: XY как у реального ЗХ; вертикальная полилиния; мягче fraction для place -->
+    <param name="place_descent_keep_current_xy" value="true"/>
+    <param name="place_prefer_vertical_polyline_first" value="true"/>
+    <param name="place_vertical_cartesian_substep_m" value="0.018"/>
+    <param name="place_cartesian_min_fraction" value="0.62"/>
+    <param name="place_cartesian_polyline_min_fraction" value="0.52"/>
+    <!-- при упоре в коллизии куба со столом в планировщике: осторожно, только сим -->
+    <param name="place_cartesian_allow_collisions" value="false"/>
   </node>
 </launch>
 

@@ -118,6 +118,8 @@ class NeuralNetworkCamera:
         self.container_size_z = float(rospy.get_param("~container_size_z", rospy.get_param("~goal_platform/size_z", 0.06)))
 
         self.cube_size = float(rospy.get_param("~cube_size", rospy.get_param("~target_cube/size", 0.08)))
+        # true: не подменять Z цели фиксированным container_top из yaml — использовать Z из link_states (реальная площадка в Gazebo)
+        self.goal_pose_keep_link_z = param_bool("~goal_pose_keep_link_z", True)
 
         rospy.loginfo("Vision estimator initialized: red cube + green goal, pixel->world via ray-plane.")
 
@@ -256,7 +258,8 @@ class NeuralNetworkCamera:
 
             gt_goal = self._get_link_pose_world(self.goal_link_name) or self._get_model_pose_world(self.goal_model_name)
             if gt_goal is not None:
-                gt_goal.pose.position.z = float(container_top_z)
+                if not self.goal_pose_keep_link_z:
+                    gt_goal.pose.position.z = float(container_top_z)
                 self.goal_pose_pub.publish(gt_goal)
 
         if bbox is not None:
@@ -333,13 +336,15 @@ class NeuralNetworkCamera:
             elif self.use_gazebo_ground_truth:
                 gt = self._get_link_pose_world(self.goal_link_name) or self._get_model_pose_world(self.goal_model_name)
                 if gt is not None:
-                    gt.pose.position.z = float(container_top_z)
+                    if not self.goal_pose_keep_link_z:
+                        gt.pose.position.z = float(container_top_z)
                     self.goal_pose_pub.publish(gt)
         elif self.use_gazebo_ground_truth:
             gt = self._get_link_pose_world(self.goal_link_name) or self._get_model_pose_world(self.goal_model_name)
             if gt is not None:
-                container_top_z = self.container_center_z + self.container_size_z * 0.5
-                gt.pose.position.z = float(container_top_z)
+                if not self.goal_pose_keep_link_z:
+                    container_top_z = self.container_center_z + self.container_size_z * 0.5
+                    gt.pose.position.z = float(container_top_z)
                 self.goal_pose_pub.publish(gt)
 
         try:
