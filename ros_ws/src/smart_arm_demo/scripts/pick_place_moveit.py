@@ -280,29 +280,75 @@ class PickPlaceMoveIt:
             rospy.logwarn(f"Failed to set up planning scene obstacles: {e}")
 
     def _apply_path_constraints(self) -> None:
+        """
+        Ограничения пути для OMPL/cartesian:
+        - lock_wrist: фиксация запястий около центра;
+        - limit_joint_deviation: коридор вокруг текущих shoulder_pan/lift/elbow/wrist_1 — меньше лишних разворотов OMPL.
+          place_phase_only=true: коридор только при снижении укладки (pick из дома без узкого коридора).
+          place_phase_only=false: на всём цикле — *global* допуски (широкие, IK из дома проходит); при укладке — узкие *_rad.
+        """
         try:
-            if not self.lock_wrist:
+            limit_dev = param_bool("~limit_joint_deviation", True)
+            place_only = param_bool("~limit_joint_deviation_place_phase_only", True)
+            if limit_dev and place_only and not self._place_descent_active:
+                limit_dev = False
+            has_wrist = self.lock_wrist
+            if not has_wrist and not limit_dev:
                 self.group.clear_path_constraints()
                 return
             c = Constraints()
-            jc2 = JointConstraint()
-            jc2.joint_name = "wrist_2_joint"
-            jc2.position = self.wrist_2_center
-            jc2.tolerance_above = self.wrist_tol
-            jc2.tolerance_below = self.wrist_tol
-            jc2.weight = 1.0
-
-            jc3 = JointConstraint()
-            jc3.joint_name = "wrist_3_joint"
-            jc3.position = self.wrist_3_center
-            jc3.tolerance_above = self.wrist_tol
-            jc3.tolerance_below = self.wrist_tol
-            jc3.weight = 1.0
-
-            c.joint_constraints = [jc2, jc3]
+            c.joint_constraints = []
+            if has_wrist:
+                jc2 = JointConstraint()
+                jc2.joint_name = "wrist_2_joint"
+                jc2.position = self.wrist_2_center
+                jc2.tolerance_above = self.wrist_tol
+                jc2.tolerance_below = self.wrist_tol
+                jc2.weight = 1.0
+                jc3 = JointConstraint()
+                jc3.joint_name = "wrist_3_joint"
+                jc3.position = self.wrist_3_center
+                jc3.tolerance_above = self.wrist_tol
+                jc3.tolerance_below = self.wrist_tol
+                jc3.weight = 1.0
+                c.joint_constraints.extend([jc2, jc3])
+            if limit_dev:
+                try:
+                    q = list(self.group.get_current_joint_values())
+                    names = list(self.group.get_active_joints())
+                except Exception:
+                    q, names = [], []
+                if len(q) >= 3 and len(names) == len(q) and sum(abs(float(x)) for x in q) > 1e-3:
+                    if self._place_descent_active:
+                        pan_tol = float(rospy.get_param("~limit_shoulder_pan_rad", 0.52))
+                        lift_tol = float(rospy.get_param("~limit_shoulder_lift_rad", 0.72))
+                        elbow_tol = float(rospy.get_param("~limit_elbow_rad", 0.72))
+                        w1_tol = float(rospy.get_param("~limit_wrist_1_rad", 0.85))
+                    else:
+                        pan_tol = float(rospy.get_param("~limit_shoulder_pan_global_rad", 1.55))
+                        lift_tol = float(rospy.get_param("~limit_shoulder_lift_global_rad", 1.25))
+                        elbow_tol = float(rospy.get_param("~limit_elbow_global_rad", 1.25))
+                        w1_tol = float(rospy.get_param("~limit_wrist_1_global_rad", 1.4))
+                    for jn, tol in (
+                        ("shoulder_pan_joint", pan_tol),
+                        ("shoulder_lift_joint", lift_tol),
+                        ("elbow_joint", elbow_tol),
+                        ("wrist_1_joint", w1_tol),
+                    ):
+                        if jn in names:
+                            jc = JointConstraint()
+                            jc.joint_name = jn
+                            jc.position = float(q[names.index(jn)])
+                            jc.tolerance_above = tol
+                            jc.tolerance_below = tol
+                            jc.weight = float(rospy.get_param("~limit_joint_constraint_weight", 1.0))
+                            c.joint_constraints.append(jc)
+            if not c.joint_constraints:
+                self.group.clear_path_constraints()
+                return
             self.group.set_path_constraints(c)
         except Exception as e:
-            rospy.logwarn(f"Failed to apply wrist constraints: {e}")
+            rospy.logwarn(f"Failed to apply path constraints: {e}")
 
     def _on_cube_pose(self, msg: PoseStamped) -> None:
         self._latest_cube = msg
@@ -653,7 +699,7 @@ class PickPlaceMoveIt:
           auto — для mode=down по умолчанию только позиция (достижимость); home — pose если есть ref;
           none — только позиция; down — pose с _quat_down (узкий вертикальный участок).
         """
-        retries = int(rospy.get_param("~plan_retries", 5))
+        retries = int(rospy.get_param("~plan_retries", 2))
         last_plan = None
         if ori == "none":
             use_pose_effective = False
@@ -673,18 +719,13 @@ class PickPlaceMoveIt:
 
         for attempt in range(max(retries, 1)):
             self.group.clear_pose_targets()
-            if attempt == 0:
-                try:
-                    self.group.set_start_state_to_current_state()
-                except Exception:
-                    self._set_moveit_start_state_home()
-            else:
+            if attempt > 0:
                 self.group.clear_path_constraints()
-                try:
-                    self.group.set_start_state_to_current_state()
-                except Exception:
-                    self._set_moveit_start_state_home()
-                self._apply_path_constraints()
+            try:
+                self.group.set_start_state_to_current_state()
+            except Exception:
+                self._set_moveit_start_state_home()
+            self._apply_path_constraints()
 
             if use_pose_effective:
                 p = Pose()

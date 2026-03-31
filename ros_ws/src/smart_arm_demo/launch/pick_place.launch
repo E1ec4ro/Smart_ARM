@@ -85,11 +85,25 @@
     <!-- первый этап _move_via_safe_z не ниже (верх стола + зазор) в base_link -->
     <param name="enforce_min_safe_z_above_table" value="true"/>
     <param name="safe_z_clearance_above_table_m" value="0.10"/>
-    <param name="vel_scale" value="0.42"/>
-    <param name="acc_scale" value="0.38"/>
+    <!-- ниже скорость/ускорение — плавнее профиль на контроллере, меньше «рваных» сегментов -->
+    <param name="vel_scale" value="0.34"/>
+    <param name="acc_scale" value="0.30"/>
     <param name="planning_time" value="25.0"/>
     <!-- меньше внутренних перепланирований OMPL — предсказуемее и обычно короче путь -->
     <param name="planning_attempts" value="5"/>
+    <!-- повторы plan() при пустом плане; 2 достаточно, меньше «случайных» траекторий -->
+    <param name="plan_retries" value="2"/>
+    <!-- коридор суставов: false = на всём цикле умеренные global_* (меньше лишних разворотов OMPL), при укладке — узкие limit_* -->
+    <param name="limit_joint_deviation" value="true"/>
+    <param name="limit_joint_deviation_place_phase_only" value="false"/>
+    <param name="limit_shoulder_pan_rad" value="0.52"/>
+    <param name="limit_shoulder_lift_rad" value="0.72"/>
+    <param name="limit_elbow_rad" value="0.72"/>
+    <param name="limit_wrist_1_rad" value="0.85"/>
+    <param name="limit_shoulder_pan_global_rad" value="1.55"/>
+    <param name="limit_shoulder_lift_global_rad" value="1.22"/>
+    <param name="limit_elbow_global_rad" value="1.22"/>
+    <param name="limit_wrist_1_global_rad" value="1.38"/>
     <param name="pos_tol" value="0.005"/>
     <!-- cartesian_prefer: сначала прямые/ломаные в ЗХ (предсказуемо), иначе OMPL -->
     <param name="planning_method" value="cartesian_prefer"/>
@@ -97,7 +111,7 @@
     <!-- один compute_cartesian_path: (x,y,safe_z) → (x,y,z) без лишнего стопа между сегментами -->
     <param name="cartesian_safe_z_single_plan" value="true"/>
     <!-- мельче шаг — ближе к прямой в ЗХ; полилиния чуть мягче порог fraction -->
-    <param name="cartesian_eef_step_m" value="0.012"/>
+    <param name="cartesian_eef_step_m" value="0.009"/>
     <param name="cartesian_min_fraction" value="0.78"/>
     <param name="cartesian_polyline_min_fraction" value="0.72"/>
     <param name="cartesian_jump_threshold" value="2.0"/>
