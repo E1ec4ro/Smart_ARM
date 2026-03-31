@@ -210,6 +210,7 @@ class PickPlaceMoveIt:
 
         self._run_lock = threading.Lock()
         self._place_descent_active = False
+        self._place_skip_vertical_polyline_once = False
 
         rospy.Service("~run_pick_place", Trigger, self._cb_run_pick_place)
 
@@ -780,6 +781,14 @@ class PickPlaceMoveIt:
             return False
         if z_goal >= z0 - 1e-6:
             return True
+        # Одна прямая в ЗХ (текущая поза → цель) — минимальный путь; при неудаче fraction — полилиния
+        if param_bool("~place_vertical_single_straight", True):
+            plan, ok = self._try_cartesian_straight(x, y, z_goal, "none")
+            if ok and plan is not None:
+                self._execute_plan(plan)
+                rospy.loginfo("place vertical: одна прямая в ЗХ z %.4f → %.4f", z0, z_goal)
+                return True
+            rospy.logwarn("place vertical: прямая не собралась (fraction), пробуем полилинию")
         sub = float(rospy.get_param("~place_vertical_cartesian_substep_m", 0.018))
         n = max(int(math.ceil((z0 - z_goal) / sub)), 1)
         n = min(n, int(rospy.get_param("~place_vertical_cartesian_max_segments", 32)))
@@ -801,6 +810,9 @@ class PickPlaceMoveIt:
         try:
             self._move_via_safe_z(x, y, z, safe_z)
         except RuntimeError as e:
+            if param_bool("~place_pre_place_single_attempt", True):
+                rospy.logerr("%s: без повторной попытки (~place_pre_place_single_attempt)", step_name)
+                raise
             dz = float(rospy.get_param("~place_fallback_delta_z", 0.10))
             rospy.logwarn("%s failed (%s); retry with z -= %.3f m", step_name, str(e), dz)
             z2 = float(z) - dz
@@ -812,8 +824,38 @@ class PickPlaceMoveIt:
         Один шаг к (gx,gy,zn). Сначала только позиция (none) — IK чаще находит сгиб локтя/плеча;
         затем жёсткий down; затем OMPL. Жёсткий down с первого шага часто даёт «зависание» над целью.
         Дополнительно: ослабленные допуски, joint-space план, прямой шаг на контроллер (симуляция).
+
+        При ~place_single_plan_attempt=true и фазе снижения: одна вертикаль + один план (без перебора 4×ориентация/метод).
         """
-        if self._place_descent_active and param_bool("~place_prefer_vertical_polyline_first", True):
+        if self._place_descent_active and param_bool("~place_single_plan_attempt", True):
+            skip_v = False
+            if getattr(self, "_place_skip_vertical_polyline_once", False):
+                skip_v = True
+                self._place_skip_vertical_polyline_once = False
+            if param_bool("~place_prefer_vertical_polyline_first", True) and not skip_v:
+                try:
+                    if self._try_place_descent_vertical_polyline(zn):
+                        rospy.loginfo("place step OK (vertical polyline): z=%.4f", zn)
+                        return
+                except Exception as e:
+                    rospy.logwarn("vertical polyline place step: %s", e)
+            mo = planning_method_override if (planning_method_override and str(planning_method_override).strip()) else str(
+                rospy.get_param("~planning_method_place_descent", "cartesian_prefer")
+            ).strip().lower()
+            plan = self._plan_segment(gx, gy, zn, ori="none", method_override=mo)
+            self._execute_plan(plan)
+            rospy.loginfo("place step OK (single plan): z=%.4f method=%s", zn, mo)
+            return
+
+        skip_v = False
+        if getattr(self, "_place_skip_vertical_polyline_once", False):
+            skip_v = True
+            self._place_skip_vertical_polyline_once = False
+        if (
+            self._place_descent_active
+            and param_bool("~place_prefer_vertical_polyline_first", True)
+            and not skip_v
+        ):
             try:
                 if self._try_place_descent_vertical_polyline(zn):
                     rospy.loginfo("place step OK (vertical polyline): z=%.4f", zn)
@@ -906,7 +948,7 @@ class PickPlaceMoveIt:
                 self._execute_plan(plan)
                 self._apply_path_constraints()
                 return
-            rospy.sleep(0.06)
+            rospy.sleep(float(rospy.get_param("~place_joint_fallback_sleep_s", 0.03)))
         raise RuntimeError("joint-space fallback: no plan after nudges")
 
     def _current_joint_positions_for_controller(self) -> List[float]:
@@ -930,7 +972,8 @@ class PickPlaceMoveIt:
         pt.time_from_start = rospy.Duration(duration)
         msg.points = [pt]
         self.pub_arm.publish(msg)
-        rospy.sleep(max(duration + 0.1, 0.35))
+        pad = float(rospy.get_param("~direct_joint_traj_wait_pad_s", 0.06))
+        rospy.sleep(max(duration + pad, 0.22))
         self._pause("after_direct_joint")
 
     def _direct_joint_nudge_downward_once(self) -> bool:
@@ -976,6 +1019,7 @@ class PickPlaceMoveIt:
         """
         z_final = self._effective_place_target_z(z_final, pre_z)
         self._place_descent_active = True
+        self._place_skip_vertical_polyline_once = False
         if param_bool("~place_smooth_descent", True):
             dz = float(rospy.get_param("~place_descent_step_m", 0.032))
         else:
@@ -983,6 +1027,62 @@ class PickPlaceMoveIt:
         eps = float(rospy.get_param("~place_descent_eps_m", 0.006))
         max_iter = int(rospy.get_param("~place_descent_max_steps", 48))
         try:
+            # Режим «одна попытка укладки»: вертикаль до z_final, при необходимости один запасной план — без циклов IK
+            if param_bool("~place_one_shot_placement", True):
+                # Допуск по высоте шире eps: иначе контроллер чуть не дотягивает → лишний запасной план («вторая попытка»)
+                slack = float(rospy.get_param("~place_one_shot_success_slack_m", 0.025))
+                vert_ok = self._try_place_descent_vertical_polyline(z_final)
+                cz = float(self.group.get_current_pose().pose.position.z)
+                if vert_ok and cz <= z_final + max(eps, slack):
+                    rospy.loginfo(
+                        "place one-shot: вертикаль OK z=%.4f (цель %.4f, допуск %.3f м)",
+                        cz,
+                        z_final,
+                        max(eps, slack),
+                    )
+                    return
+                if vert_ok:
+                    rospy.logwarn(
+                        "place one-shot: вертикаль выполнена, но z=%.4f выше цели с допуском (цель %.4f) — запасной план",
+                        cz,
+                        z_final,
+                    )
+                if param_bool("~place_one_shot_backup_plan", True):
+                    cp = self.group.get_current_pose().pose.position
+                    if param_bool("~place_descent_keep_current_xy", True):
+                        gx_e, gy_e = float(cp.x), float(cp.y)
+                    else:
+                        gx_e, gy_e = gx, gy
+                    mo = (
+                        planning_method_override
+                        if (planning_method_override and str(planning_method_override).strip())
+                        else str(rospy.get_param("~planning_method_place_descent", "cartesian_prefer")).strip().lower()
+                    )
+                    plan = self._plan_segment(gx_e, gy_e, z_final, ori="none", method_override=mo)
+                    self._execute_plan(plan)
+                    cz = float(self.group.get_current_pose().pose.position.z)
+                    rospy.loginfo("place one-shot: запасной план z=%.4f (цель %.4f)", cz, z_final)
+                    if param_bool("~place_one_shot_strict_height", False) and cz > z_final + max(eps, slack):
+                        raise RuntimeError(
+                            f"place one-shot: EE z={cz:.4f} выше цели {z_final:.4f} с допуском (включите пошаговый режим или ослабьте strict)"
+                        )
+                    return
+                raise RuntimeError("place one-shot: вертикаль не достигла цели, запасной план отключён (~place_one_shot_backup_plan)")
+
+            # Одна вертикальная траектория до z_final — меньше «попыток» и изгибов, чем много микрошагов
+            if param_bool("~place_simple_descent", True):
+                if self._try_place_descent_vertical_polyline(z_final):
+                    cz = float(self.group.get_current_pose().pose.position.z)
+                    if cz <= z_final + eps:
+                        rospy.loginfo(
+                            "place simple descent: одна вертикаль до z=%.4f (цель %.4f)",
+                            cz,
+                            z_final,
+                        )
+                        return
+                    # Частично дошли — не дублировать полную вертикаль на первом микрошаге
+                    self._place_skip_vertical_polyline_once = True
+                rospy.loginfo("place: пошаговый резерв (простое снижение не завершило цель полностью)")
             for i in range(max_iter):
                 cp = self.group.get_current_pose().pose.position
                 cz = float(cp.z)
@@ -1010,6 +1110,7 @@ class PickPlaceMoveIt:
             )
         finally:
             self._place_descent_active = False
+            self._place_skip_vertical_polyline_once = False
 
     def _execute_plan(self, plan) -> None:
         try:
@@ -1029,7 +1130,10 @@ class PickPlaceMoveIt:
             rospy.logwarn("длительность траектории %.1f s > max_motion_wait_s=%.1f — ограничиваем ожидание", dur, cap)
         dur = min(dur, cap)
         rospy.loginfo("ожидание движения: %.1f s (~%d точек)", dur, len(jt_scaled.points))
-        rospy.sleep(max(dur, 0.3))
+        floor = float(rospy.get_param("~motion_wait_floor_s", 0.3))
+        if self._place_descent_active:
+            floor = float(rospy.get_param("~motion_wait_floor_place_descent_s", 0.06))
+        rospy.sleep(max(dur, floor))
         self._pause("after_motion")
 
     def _pause(self, reason: str) -> None:
