@@ -1,4 +1,4 @@
-<launch>
+﻿<launch>
   <node name="camera_view_detected"
         pkg="image_view"
         type="image_view"
@@ -8,5 +8,34 @@
         launch-prefix="bash -c 'sleep 10; export DISPLAY=:1; xhost +local: 2>/dev/null; $0 $@'">
     <env name="DISPLAY" value=":1"/>
   </node>
-</launch>
 
+  <node name="camera_view_detected_main"
+        pkg="image_view"
+        type="image_view"
+        args="image:=/overhead_camera/main/image_detected"
+        output="screen"
+        respawn="true"
+        launch-prefix="bash -c 'sleep 10; export DISPLAY=:1; xhost +local: 2>/dev/null; $0 $@'">
+    <env name="DISPLAY" value=":1"/>
+  </node>
+
+  <node name="camera_view_detected_aux_left"
+        pkg="image_view"
+        type="image_view"
+        args="image:=/overhead_camera/aux_left/image_detected"
+        output="screen"
+        respawn="true"
+        launch-prefix="bash -c 'sleep 10; export DISPLAY=:1; xhost +local: 2>/dev/null; $0 $@'">
+    <env name="DISPLAY" value=":1"/>
+  </node>
+
+  <node name="camera_view_detected_aux_right"
+        pkg="image_view"
+        type="image_view"
+        args="image:=/overhead_camera/aux_right/image_detected"
+        output="screen"
+        respawn="true"
+        launch-prefix="bash -c 'sleep 10; export DISPLAY=:1; xhost +local: 2>/dev/null; $0 $@'">
+    <env name="DISPLAY" value=":1"/>
+  </node>
+</launch>

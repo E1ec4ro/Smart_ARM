@@ -1,6 +1,6 @@
 <!--
-  Baseline pick&place (рабочий алгоритм): при изменениях отталкивайтесь от этого launch + pick_place_moveit.py.
-  Ключевые идеи: goal_pose_keep_link_z, place_descent_keep_current_xy, place_simple_descent, scene obstacles.
+  Baseline pick&place (Ñ€Ð°Ð±Ð¾Ñ‡Ð¸Ð¹ Ð°Ð»Ð³Ð¾Ñ€Ð¸Ñ‚Ð¼): Ð¿Ñ€Ð¸ Ð¸Ð·Ð¼ÐµÐ½ÐµÐ½Ð¸ÑÑ… Ð¾Ñ‚Ñ‚Ð°Ð»ÐºÐ¸Ð²Ð°Ð¹Ñ‚ÐµÑÑŒ Ð¾Ñ‚ ÑÑ‚Ð¾Ð³Ð¾ launch + pick_place_moveit.py.
+  ÐšÐ»ÑŽÑ‡ÐµÐ²Ñ‹Ðµ Ð¸Ð´ÐµÐ¸: goal_pose_keep_link_z, place_descent_keep_current_xy, place_simple_descent, scene obstacles.
 -->
 <launch>
   <include file="$(find smart_arm_demo)/launch/sim.launch" />
@@ -13,11 +13,18 @@
     <rosparam file="$(find smart_arm_demo)/config/camera_model.yaml" command="load"/>
     <rosparam file="$(find smart_arm_demo)/config/workspace.yaml" command="load"/>
     <param name="use_gazebo_ground_truth" value="true"/>
-    <param name="ground_truth_only" value="true"/>
+    <param name="ground_truth_only" value="false"/>
+    <param name="fallback_to_ground_truth" value="true"/>
+    <param name="fusion_max_age_s" value="0.45"/>
+    <param name="min_cameras_for_fusion" value="1"/>
+    <param name="min_cube_score_publish" value="0.15"/>
+    <param name="min_goal_score_publish" value="0.12"/>
+    <param name="pose_ema_alpha" value="0.35"/>
     <param name="cube_link_name" value="target_cube::cube_link"/>
     <param name="goal_link_name" value="cube_container::container_link"/>
-    <!-- true: Z цели из Gazebo link (реальная площадка); false — фикс. высота из yaml (часто рассинхрон с симуляцией) -->
+    <!-- true: Z Ñ†ÐµÐ»Ð¸ Ð¸Ð· Gazebo link (Ñ€ÐµÐ°Ð»ÑŒÐ½Ð°Ñ Ð¿Ð»Ð¾Ñ‰Ð°Ð´ÐºÐ°); false â€” Ñ„Ð¸ÐºÑ. Ð²Ñ‹ÑÐ¾Ñ‚Ð° Ð¸Ð· yaml (Ñ‡Ð°ÑÑ‚Ð¾ Ñ€Ð°ÑÑÐ¸Ð½Ñ…Ñ€Ð¾Ð½ Ñ ÑÐ¸Ð¼ÑƒÐ»ÑÑ†Ð¸ÐµÐ¹) -->
     <param name="goal_pose_keep_link_z" value="true"/>
+    <!-- camera_sources загружается из camera_model.yaml -->
   </node>
 
   <include file="$(find smart_arm_demo)/launch/camera_view.launch" />
@@ -27,7 +34,7 @@
         type="gripper_control.py"
         output="screen"
         launch-prefix="bash -c 'sleep 20; $0 $@'">
-    <!-- finger_*_joint: 0=открыто, ~0.055=полное смыкание. Меньше — слабее сжатие; перенос куба даёт Gazebo /attach, не давление пальцев -->
+    <!-- finger_*_joint: 0=Ð¾Ñ‚ÐºÑ€Ñ‹Ñ‚Ð¾, ~0.055=Ð¿Ð¾Ð»Ð½Ð¾Ðµ ÑÐ¼Ñ‹ÐºÐ°Ð½Ð¸Ðµ. ÐœÐµÐ½ÑŒÑˆÐµ â€” ÑÐ»Ð°Ð±ÐµÐµ ÑÐ¶Ð°Ñ‚Ð¸Ðµ; Ð¿ÐµÑ€ÐµÐ½Ð¾Ñ ÐºÑƒÐ±Ð° Ð´Ð°Ñ‘Ñ‚ Gazebo /attach, Ð½Ðµ Ð´Ð°Ð²Ð»ÐµÐ½Ð¸Ðµ Ð¿Ð°Ð»ÑŒÑ†ÐµÐ² -->
     <param name="close_position" value="0.017"/>
     <param name="open_position" value="0.0"/>
   </node>
@@ -46,11 +53,11 @@
     <param name="model_name" value="target_cube"/>
     <param name="link_name" value="ur5::gripper_base_link"/>
     <param name="cube_link_name" value="target_cube::cube_link"/>
-    <!-- set_link_state по cube_link — без скачка из‑за model origin ≠ центр куба в SDF -->
+    <!-- set_link_state Ð¿Ð¾ cube_link â€” Ð±ÐµÐ· ÑÐºÐ°Ñ‡ÐºÐ° Ð¸Ð·â€‘Ð·Ð° model origin â‰  Ñ†ÐµÐ½Ñ‚Ñ€ ÐºÑƒÐ±Ð° Ð² SDF -->
     <param name="use_set_link_state" value="true"/>
-    <!-- true: куб не копирует ориентацию фланца (меньше визуального «улёта») -->
+    <!-- true: ÐºÑƒÐ± Ð½Ðµ ÐºÐ¾Ð¿Ð¸Ñ€ÑƒÐµÑ‚ Ð¾Ñ€Ð¸ÐµÐ½Ñ‚Ð°Ñ†Ð¸ÑŽ Ñ„Ð»Ð°Ð½Ñ†Ð° (Ð¼ÐµÐ½ÑŒÑˆÐµ Ð²Ð¸Ð·ÑƒÐ°Ð»ÑŒÐ½Ð¾Ð³Ð¾ Â«ÑƒÐ»Ñ‘Ñ‚Ð°Â») -->
     <param name="cube_orientation_identity" value="true"/>
-    <!-- offset_xyz — если dynamic=false или нет link_states; при true — смещение из cube_link − фланец -->
+    <!-- offset_xyz â€” ÐµÑÐ»Ð¸ dynamic=false Ð¸Ð»Ð¸ Ð½ÐµÑ‚ link_states; Ð¿Ñ€Ð¸ true â€” ÑÐ¼ÐµÑ‰ÐµÐ½Ð¸Ðµ Ð¸Ð· cube_link âˆ’ Ñ„Ð»Ð°Ð½ÐµÑ† -->
     <rosparam param="offset_xyz">[0.07, 0.0, -0.055]</rosparam>
     <param name="dynamic_offset_on_attach" value="true"/>
     <param name="compose_pose_in_world" value="true"/>
@@ -68,40 +75,40 @@
     <param name="ee_link" value="gripper_base_link"/>
     <param name="planning_frame" value="base_link"/>
     <rosparam param="world_to_base_link_xyz">[0.0, 0.0, 0.20]</rosparam>
-    <!-- down: жёсткая ориентация только на снижении к цели; иначе IK не дотягивается от базы — «застревание у дома» -->
+    <!-- down: Ð¶Ñ‘ÑÑ‚ÐºÐ°Ñ Ð¾Ñ€Ð¸ÐµÐ½Ñ‚Ð°Ñ†Ð¸Ñ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð½Ð° ÑÐ½Ð¸Ð¶ÐµÐ½Ð¸Ð¸ Ðº Ñ†ÐµÐ»Ð¸; Ð¸Ð½Ð°Ñ‡Ðµ IK Ð½Ðµ Ð´Ð¾Ñ‚ÑÐ³Ð¸Ð²Ð°ÐµÑ‚ÑÑ Ð¾Ñ‚ Ð±Ð°Ð·Ñ‹ â€” Â«Ð·Ð°ÑÑ‚Ñ€ÐµÐ²Ð°Ð½Ð¸Ðµ Ñƒ Ð´Ð¾Ð¼Ð°Â» -->
     <param name="ee_orientation_mode" value="down"/>
     <param name="down_orientation_for_grasp_only" value="true"/>
-    <!-- RPY в base_link; при неверном наклоне схвата сдвиньте yaw (3-й) или попробуйте [pi,0,0] -->
+    <!-- RPY Ð² base_link; Ð¿Ñ€Ð¸ Ð½ÐµÐ²ÐµÑ€Ð½Ð¾Ð¼ Ð½Ð°ÐºÐ»Ð¾Ð½Ðµ ÑÑ…Ð²Ð°Ñ‚Ð° ÑÐ´Ð²Ð¸Ð½ÑŒÑ‚Ðµ yaw (3-Ð¹) Ð¸Ð»Ð¸ Ð¿Ð¾Ð¿Ñ€Ð¾Ð±ÑƒÐ¹Ñ‚Ðµ [pi,0,0] -->
     <rosparam param="ee_down_rpy">[0.0, 3.14159265, 0.0]</rosparam>
-    <!-- false: один план на сегмент — меньше «рывков» при перепланировании -->
+    <!-- false: Ð¾Ð´Ð¸Ð½ Ð¿Ð»Ð°Ð½ Ð½Ð° ÑÐµÐ³Ð¼ÐµÐ½Ñ‚ â€” Ð¼ÐµÐ½ÑŒÑˆÐµ Â«Ñ€Ñ‹Ð²ÐºÐ¾Ð²Â» Ð¿Ñ€Ð¸ Ð¿ÐµÑ€ÐµÐ¿Ð»Ð°Ð½Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð¸Ð¸ -->
     <param name="allow_replanning" value="false"/>
-    <!-- удержание запястий только на езде к pre_place (не на подъёме после attach) -->
+    <!-- ÑƒÐ´ÐµÑ€Ð¶Ð°Ð½Ð¸Ðµ Ð·Ð°Ð¿ÑÑÑ‚Ð¸Ð¹ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð½Ð° ÐµÐ·Ð´Ðµ Ðº pre_place (Ð½Ðµ Ð½Ð° Ð¿Ð¾Ð´ÑŠÑ‘Ð¼Ðµ Ð¿Ð¾ÑÐ»Ðµ attach) -->
     <param name="hold_wrist_near_current_carry" value="true"/>
     <param name="carry_overrides_lock_wrist" value="true"/>
     <param name="carry_wrist_1_tol_rad" value="0.40"/>
     <param name="carry_wrist_2_tol_rad" value="0.46"/>
     <param name="carry_wrist_3_tol_rad" value="0.50"/>
-    <!-- вертикаль к grasp: сначала полилиния с постоянным down (не none→down по одному сегменту) -->
+    <!-- Ð²ÐµÑ€Ñ‚Ð¸ÐºÐ°Ð»ÑŒ Ðº grasp: ÑÐ½Ð°Ñ‡Ð°Ð»Ð° Ð¿Ð¾Ð»Ð¸Ð»Ð¸Ð½Ð¸Ñ Ñ Ð¿Ð¾ÑÑ‚Ð¾ÑÐ½Ð½Ñ‹Ð¼ down (Ð½Ðµ noneâ†’down Ð¿Ð¾ Ð¾Ð´Ð½Ð¾Ð¼Ñƒ ÑÐµÐ³Ð¼ÐµÐ½Ñ‚Ñƒ) -->
     <param name="pick_vertical_constant_down_first" value="true"/>
     <param name="lock_wrist" value="false"/>
     <param name="wrist_2_center" value="1.57"/>
     <param name="wrist_3_center" value="0.0"/>
     <param name="wrist_tol" value="0.85"/>
-    <!-- true: стол/пьедестал в PlanningScene — иначе OMPL «режет» сквозь стол, в Gazebo робот упирается -->
+    <!-- true: ÑÑ‚Ð¾Ð»/Ð¿ÑŒÐµÐ´ÐµÑÑ‚Ð°Ð» Ð² PlanningScene â€” Ð¸Ð½Ð°Ñ‡Ðµ OMPL Â«Ñ€ÐµÐ¶ÐµÑ‚Â» ÑÐºÐ²Ð¾Ð·ÑŒ ÑÑ‚Ð¾Ð», Ð² Gazebo Ñ€Ð¾Ð±Ð¾Ñ‚ ÑƒÐ¿Ð¸Ñ€Ð°ÐµÑ‚ÑÑ -->
     <param name="enable_scene_obstacles" value="true"/>
     <param name="scene_collision_padding_m" value="0.02"/>
-    <!-- первый этап _move_via_safe_z не ниже (верх стола + зазор) в base_link -->
+    <!-- Ð¿ÐµÑ€Ð²Ñ‹Ð¹ ÑÑ‚Ð°Ð¿ _move_via_safe_z Ð½Ðµ Ð½Ð¸Ð¶Ðµ (Ð²ÐµÑ€Ñ… ÑÑ‚Ð¾Ð»Ð° + Ð·Ð°Ð·Ð¾Ñ€) Ð² base_link -->
     <param name="enforce_min_safe_z_above_table" value="true"/>
     <param name="safe_z_clearance_above_table_m" value="0.10"/>
-    <!-- после сглаживания геометрии пути можно чуть поднять скорость — короче время цикла -->
+    <!-- Ð¿Ð¾ÑÐ»Ðµ ÑÐ³Ð»Ð°Ð¶Ð¸Ð²Ð°Ð½Ð¸Ñ Ð³ÐµÐ¾Ð¼ÐµÑ‚Ñ€Ð¸Ð¸ Ð¿ÑƒÑ‚Ð¸ Ð¼Ð¾Ð¶Ð½Ð¾ Ñ‡ÑƒÑ‚ÑŒ Ð¿Ð¾Ð´Ð½ÑÑ‚ÑŒ ÑÐºÐ¾Ñ€Ð¾ÑÑ‚ÑŒ â€” ÐºÐ¾Ñ€Ð¾Ñ‡Ðµ Ð²Ñ€ÐµÐ¼Ñ Ñ†Ð¸ÐºÐ»Ð° -->
     <param name="vel_scale" value="0.40"/>
     <param name="acc_scale" value="0.34"/>
     <param name="planning_time" value="25.0"/>
-    <!-- меньше внутренних перепланирований OMPL — предсказуемее и обычно короче путь -->
+    <!-- Ð¼ÐµÐ½ÑŒÑˆÐµ Ð²Ð½ÑƒÑ‚Ñ€ÐµÐ½Ð½Ð¸Ñ… Ð¿ÐµÑ€ÐµÐ¿Ð»Ð°Ð½Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð¸Ð¹ OMPL â€” Ð¿Ñ€ÐµÐ´ÑÐºÐ°Ð·ÑƒÐµÐ¼ÐµÐµ Ð¸ Ð¾Ð±Ñ‹Ñ‡Ð½Ð¾ ÐºÐ¾Ñ€Ð¾Ñ‡Ðµ Ð¿ÑƒÑ‚ÑŒ -->
     <param name="planning_attempts" value="5"/>
-    <!-- повторы plan() при пустом плане; 2 достаточно, меньше «случайных» траекторий -->
+    <!-- Ð¿Ð¾Ð²Ñ‚Ð¾Ñ€Ñ‹ plan() Ð¿Ñ€Ð¸ Ð¿ÑƒÑÑ‚Ð¾Ð¼ Ð¿Ð»Ð°Ð½Ðµ; 2 Ð´Ð¾ÑÑ‚Ð°Ñ‚Ð¾Ñ‡Ð½Ð¾, Ð¼ÐµÐ½ÑŒÑˆÐµ Â«ÑÐ»ÑƒÑ‡Ð°Ð¹Ð½Ñ‹Ñ…Â» Ñ‚Ñ€Ð°ÐµÐºÑ‚Ð¾Ñ€Ð¸Ð¹ -->
     <param name="plan_retries" value="2"/>
-    <!-- коридор суставов: false = на всём цикле умеренные global_* (меньше лишних разворотов OMPL), при укладке — узкие limit_* -->
+    <!-- ÐºÐ¾Ñ€Ð¸Ð´Ð¾Ñ€ ÑÑƒÑÑ‚Ð°Ð²Ð¾Ð²: false = Ð½Ð° Ð²ÑÑ‘Ð¼ Ñ†Ð¸ÐºÐ»Ðµ ÑƒÐ¼ÐµÑ€ÐµÐ½Ð½Ñ‹Ðµ global_* (Ð¼ÐµÐ½ÑŒÑˆÐµ Ð»Ð¸ÑˆÐ½Ð¸Ñ… Ñ€Ð°Ð·Ð²Ð¾Ñ€Ð¾Ñ‚Ð¾Ð² OMPL), Ð¿Ñ€Ð¸ ÑƒÐºÐ»Ð°Ð´ÐºÐµ â€” ÑƒÐ·ÐºÐ¸Ðµ limit_* -->
     <param name="limit_joint_deviation" value="true"/>
     <param name="limit_joint_deviation_place_phase_only" value="false"/>
     <param name="limit_shoulder_pan_rad" value="0.52"/>
@@ -113,36 +120,36 @@
     <param name="limit_elbow_global_rad" value="1.22"/>
     <param name="limit_wrist_1_global_rad" value="1.38"/>
     <param name="pos_tol" value="0.005"/>
-    <!-- cartesian_prefer: сначала прямые/ломаные в ЗХ (предсказуемо), иначе OMPL -->
+    <!-- cartesian_prefer: ÑÐ½Ð°Ñ‡Ð°Ð»Ð° Ð¿Ñ€ÑÐ¼Ñ‹Ðµ/Ð»Ð¾Ð¼Ð°Ð½Ñ‹Ðµ Ð² Ð—Ð¥ (Ð¿Ñ€ÐµÐ´ÑÐºÐ°Ð·ÑƒÐµÐ¼Ð¾), Ð¸Ð½Ð°Ñ‡Ðµ OMPL -->
     <param name="planning_method" value="cartesian_prefer"/>
-    <!-- после attach у куба collision в сцене — декартов путь вверх часто режется; OMPL надёжнее -->
+    <!-- Ð¿Ð¾ÑÐ»Ðµ attach Ñƒ ÐºÑƒÐ±Ð° collision Ð² ÑÑ†ÐµÐ½Ðµ â€” Ð´ÐµÐºÐ°Ñ€Ñ‚Ð¾Ð² Ð¿ÑƒÑ‚ÑŒ Ð²Ð²ÐµÑ€Ñ… Ñ‡Ð°ÑÑ‚Ð¾ Ñ€ÐµÐ¶ÐµÑ‚ÑÑ; OMPL Ð½Ð°Ð´Ñ‘Ð¶Ð½ÐµÐµ -->
     <param name="planning_method_lift" value="ompl"/>
-    <!-- перенос с прикреплённым кубом к точке над площадкой: иначе пустой план и срабатывает аварийный home с кубом -->
+    <!-- Ð¿ÐµÑ€ÐµÐ½Ð¾Ñ Ñ Ð¿Ñ€Ð¸ÐºÑ€ÐµÐ¿Ð»Ñ‘Ð½Ð½Ñ‹Ð¼ ÐºÑƒÐ±Ð¾Ð¼ Ðº Ñ‚Ð¾Ñ‡ÐºÐµ Ð½Ð°Ð´ Ð¿Ð»Ð¾Ñ‰Ð°Ð´ÐºÐ¾Ð¹: Ð¸Ð½Ð°Ñ‡Ðµ Ð¿ÑƒÑÑ‚Ð¾Ð¹ Ð¿Ð»Ð°Ð½ Ð¸ ÑÑ€Ð°Ð±Ð°Ñ‚Ñ‹Ð²Ð°ÐµÑ‚ Ð°Ð²Ð°Ñ€Ð¸Ð¹Ð½Ñ‹Ð¹ home Ñ ÐºÑƒÐ±Ð¾Ð¼ -->
     <param name="planning_method_pre_place" value="ompl"/>
     <param name="limit_joint_deviation_exempt_move_pre_place" value="true"/>
     <param name="hold_wrist_exempt_move_pre_place" value="true"/>
-    <!-- один compute_cartesian_path: (x,y,safe_z) → (x,y,z) без лишнего стопа между сегментами -->
+    <!-- Ð¾Ð´Ð¸Ð½ compute_cartesian_path: (x,y,safe_z) â†’ (x,y,z) Ð±ÐµÐ· Ð»Ð¸ÑˆÐ½ÐµÐ³Ð¾ ÑÑ‚Ð¾Ð¿Ð° Ð¼ÐµÐ¶Ð´Ñƒ ÑÐµÐ³Ð¼ÐµÐ½Ñ‚Ð°Ð¼Ð¸ -->
     <param name="cartesian_safe_z_single_plan" value="true"/>
-    <!-- мельче шаг — ближе к прямой в ЗХ; полилиния чуть мягче порог fraction -->
+    <!-- Ð¼ÐµÐ»ÑŒÑ‡Ðµ ÑˆÐ°Ð³ â€” Ð±Ð»Ð¸Ð¶Ðµ Ðº Ð¿Ñ€ÑÐ¼Ð¾Ð¹ Ð² Ð—Ð¥; Ð¿Ð¾Ð»Ð¸Ð»Ð¸Ð½Ð¸Ñ Ñ‡ÑƒÑ‚ÑŒ Ð¼ÑÐ³Ñ‡Ðµ Ð¿Ð¾Ñ€Ð¾Ð³ fraction -->
     <param name="cartesian_eef_step_m" value="0.009"/>
     <param name="cartesian_min_fraction" value="0.78"/>
     <param name="cartesian_polyline_min_fraction" value="0.72"/>
     <param name="cartesian_jump_threshold" value="2.0"/>
-    <!-- при неудаче OMPL: RRTstar/PRMstar часто короче RRTConnect, но медленнее (см. ompl_planning.yaml) -->
+    <!-- Ð¿Ñ€Ð¸ Ð½ÐµÑƒÐ´Ð°Ñ‡Ðµ OMPL: RRTstar/PRMstar Ñ‡Ð°ÑÑ‚Ð¾ ÐºÐ¾Ñ€Ð¾Ñ‡Ðµ RRTConnect, Ð½Ð¾ Ð¼ÐµÐ´Ð»ÐµÐ½Ð½ÐµÐµ (ÑÐ¼. ompl_planning.yaml) -->
     <!-- <param name="planner_id" value="RRTstar"/> -->
     <param name="max_trajectory_points" value="120"/>
     <param name="max_motion_wait_s" value="45.0"/>
-    <!-- 1.0 — использовать время после TOPT (оптимально по времени в рамках лимитов суставов) -->
+    <!-- 1.0 â€” Ð¸ÑÐ¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÑŒ Ð²Ñ€ÐµÐ¼Ñ Ð¿Ð¾ÑÐ»Ðµ TOPT (Ð¾Ð¿Ñ‚Ð¸Ð¼Ð°Ð»ÑŒÐ½Ð¾ Ð¿Ð¾ Ð²Ñ€ÐµÐ¼ÐµÐ½Ð¸ Ð² Ñ€Ð°Ð¼ÐºÐ°Ñ… Ð»Ð¸Ð¼Ð¸Ñ‚Ð¾Ð² ÑÑƒÑÑ‚Ð°Ð²Ð¾Ð²) -->
     <param name="trajectory_time_scale" value="1.0"/>
     <param name="post_action_pause_s" value="0.04"/>
     <param name="motion_wait_floor_s" value="0.10"/>
     <param name="cartesian_point_dt_sec" value="0.032"/>
     <param name="motion_wait_floor_place_descent_s" value="0.05"/>
     <param name="attach_max_distance_m" value="0.22"/>
-    <!-- EE не выше центра куба чем на столько (base_link), иначе виртуальный attach без касания -->
+    <!-- EE Ð½Ðµ Ð²Ñ‹ÑˆÐµ Ñ†ÐµÐ½Ñ‚Ñ€Ð° ÐºÑƒÐ±Ð° Ñ‡ÐµÐ¼ Ð½Ð° ÑÑ‚Ð¾Ð»ÑŒÐºÐ¾ (base_link), Ð¸Ð½Ð°Ñ‡Ðµ Ð²Ð¸Ñ€Ñ‚ÑƒÐ°Ð»ÑŒÐ½Ñ‹Ð¹ attach Ð±ÐµÐ· ÐºÐ°ÑÐ°Ð½Ð¸Ñ -->
     <param name="attach_max_dz_above_cube_m" value="0.16"/>
     <param name="min_clearance_above_cube_top_m" value="0.03"/>
-    <!-- pre→grasp: не сужать OMPL коридором суставов; перед attach — микро-снижение если EE ещё «висит» -->
+    <!-- preâ†’grasp: Ð½Ðµ ÑÑƒÐ¶Ð°Ñ‚ÑŒ OMPL ÐºÐ¾Ñ€Ð¸Ð´Ð¾Ñ€Ð¾Ð¼ ÑÑƒÑÑ‚Ð°Ð²Ð¾Ð²; Ð¿ÐµÑ€ÐµÐ´ attach â€” Ð¼Ð¸ÐºÑ€Ð¾-ÑÐ½Ð¸Ð¶ÐµÐ½Ð¸Ðµ ÐµÑÐ»Ð¸ EE ÐµÑ‰Ñ‘ Â«Ð²Ð¸ÑÐ¸Ñ‚Â» -->
     <param name="limit_joint_deviation_exempt_grasp_descent" value="true"/>
     <param name="limit_joint_deviation_exempt_post_attach_lift" value="true"/>
     <param name="grasp_attach_repair_enable" value="true"/>
@@ -150,66 +157,68 @@
     <param name="grasp_attach_repair_step_m" value="0.016"/>
     <param name="grasp_attach_repair_below_safe_z_margin_m" value="0.14"/>
     <param name="min_approach_above_grasp_m" value="0.16"/>
-    <!-- false: не вызывать /close перед /attach — перенос только через Gazebo attach -->
+    <!-- false: Ð½Ðµ Ð²Ñ‹Ð·Ñ‹Ð²Ð°Ñ‚ÑŒ /close Ð¿ÐµÑ€ÐµÐ´ /attach â€” Ð¿ÐµÑ€ÐµÐ½Ð¾Ñ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ñ‡ÐµÑ€ÐµÐ· Gazebo attach -->
     <param name="gripper_close_before_attach" value="false"/>
     <param name="gripper_settle_before_attach_s" value="0.12"/>
-    <!-- если gripper_close_before_attach=true -->
+    <!-- ÐµÑÐ»Ð¸ gripper_close_before_attach=true -->
     <param name="gripper_settle_after_close_s" value="0.7"/>
     <param name="attach_srv" value="/gazebo_attach/attach"/>
     <param name="detach_srv" value="/gazebo_attach/detach"/>
-    <!-- place: цели в base_link; если pre и place оба упираются в max, без place_min_below_pre робот не снижается -->
-    <!-- чуть ниже потолок place — иначе pre/place часто упираются в max и робот «висит» над площадкой -->
+    <!-- place: Ñ†ÐµÐ»Ð¸ Ð² base_link; ÐµÑÐ»Ð¸ pre Ð¸ place Ð¾Ð±Ð° ÑƒÐ¿Ð¸Ñ€Ð°ÑŽÑ‚ÑÑ Ð² max, Ð±ÐµÐ· place_min_below_pre Ñ€Ð¾Ð±Ð¾Ñ‚ Ð½Ðµ ÑÐ½Ð¸Ð¶Ð°ÐµÑ‚ÑÑ -->
+    <!-- Ñ‡ÑƒÑ‚ÑŒ Ð½Ð¸Ð¶Ðµ Ð¿Ð¾Ñ‚Ð¾Ð»Ð¾Ðº place â€” Ð¸Ð½Ð°Ñ‡Ðµ pre/place Ñ‡Ð°ÑÑ‚Ð¾ ÑƒÐ¿Ð¸Ñ€Ð°ÑŽÑ‚ÑÑ Ð² max Ð¸ Ñ€Ð¾Ð±Ð¾Ñ‚ Â«Ð²Ð¸ÑÐ¸Ñ‚Â» Ð½Ð°Ð´ Ð¿Ð»Ð¾Ñ‰Ð°Ð´ÐºÐ¾Ð¹ -->
     <param name="place_max_z_base" value="0.84"/>
-    <!-- потолок EE над столешницей (base_link), см. _effective_place_target_z — иначе «ложный успех» без снижения -->
+    <!-- Ð¿Ð¾Ñ‚Ð¾Ð»Ð¾Ðº EE Ð½Ð°Ð´ ÑÑ‚Ð¾Ð»ÐµÑˆÐ½Ð¸Ñ†ÐµÐ¹ (base_link), ÑÐ¼. _effective_place_target_z â€” Ð¸Ð½Ð°Ñ‡Ðµ Â«Ð»Ð¾Ð¶Ð½Ñ‹Ð¹ ÑƒÑÐ¿ÐµÑ…Â» Ð±ÐµÐ· ÑÐ½Ð¸Ð¶ÐµÐ½Ð¸Ñ -->
     <param name="place_ee_max_above_table_m" value="0.42"/>
     <param name="place_min_height_above_table_m" value="0.028"/>
     <param name="place_min_below_pre_m" value="0.08"/>
     <param name="place_z_fallback_delta_m" value="0.06"/>
-    <!-- 1: одна геометрия укладки (без повторов с другим z) -->
+    <!-- 1: Ð¾Ð´Ð½Ð° Ð³ÐµÐ¾Ð¼ÐµÑ‚Ñ€Ð¸Ñ ÑƒÐºÐ»Ð°Ð´ÐºÐ¸ (Ð±ÐµÐ· Ð¿Ð¾Ð²Ñ‚Ð¾Ñ€Ð¾Ð² Ñ Ð´Ñ€ÑƒÐ³Ð¸Ð¼ z) -->
     <param name="place_z_fallback_attempts" value="1"/>
-    <!-- одна попытка снижения: вертикаль + при необходимости один план; без циклов IK и без пошагового max_iter -->
+    <!-- Ð¾Ð´Ð½Ð° Ð¿Ð¾Ð¿Ñ‹Ñ‚ÐºÐ° ÑÐ½Ð¸Ð¶ÐµÐ½Ð¸Ñ: Ð²ÐµÑ€Ñ‚Ð¸ÐºÐ°Ð»ÑŒ + Ð¿Ñ€Ð¸ Ð½ÐµÐ¾Ð±Ñ…Ð¾Ð´Ð¸Ð¼Ð¾ÑÑ‚Ð¸ Ð¾Ð´Ð¸Ð½ Ð¿Ð»Ð°Ð½; Ð±ÐµÐ· Ñ†Ð¸ÐºÐ»Ð¾Ð² IK Ð¸ Ð±ÐµÐ· Ð¿Ð¾ÑˆÐ°Ð³Ð¾Ð²Ð¾Ð³Ð¾ max_iter -->
     <param name="place_one_shot_placement" value="true"/>
-    <!-- допуск по Z после вертикали: без этого контроллер часто чуть «не дотягивает» → лишний запасной план -->
+    <!-- Ð´Ð¾Ð¿ÑƒÑÐº Ð¿Ð¾ Z Ð¿Ð¾ÑÐ»Ðµ Ð²ÐµÑ€Ñ‚Ð¸ÐºÐ°Ð»Ð¸: Ð±ÐµÐ· ÑÑ‚Ð¾Ð³Ð¾ ÐºÐ¾Ð½Ñ‚Ñ€Ð¾Ð»Ð»ÐµÑ€ Ñ‡Ð°ÑÑ‚Ð¾ Ñ‡ÑƒÑ‚ÑŒ Â«Ð½Ðµ Ð´Ð¾Ñ‚ÑÐ³Ð¸Ð²Ð°ÐµÑ‚Â» â†’ Ð»Ð¸ÑˆÐ½Ð¸Ð¹ Ð·Ð°Ð¿Ð°ÑÐ½Ð¾Ð¹ Ð¿Ð»Ð°Ð½ -->
     <param name="place_one_shot_success_slack_m" value="0.028"/>
     <param name="place_one_shot_backup_plan" value="true"/>
     <param name="place_one_shot_strict_height" value="false"/>
-    <!-- внутри одного шага снижения: не перебирать none/down × cartesian/ompl -->
+    <!-- Ð²Ð½ÑƒÑ‚Ñ€Ð¸ Ð¾Ð´Ð½Ð¾Ð³Ð¾ ÑˆÐ°Ð³Ð° ÑÐ½Ð¸Ð¶ÐµÐ½Ð¸Ñ: Ð½Ðµ Ð¿ÐµÑ€ÐµÐ±Ð¸Ñ€Ð°Ñ‚ÑŒ none/down Ã— cartesian/ompl -->
     <param name="place_single_plan_attempt" value="true"/>
-    <!-- pre_place: не повторять move с уменьшенным z при ошибке -->
+    <!-- pre_place: Ð½Ðµ Ð¿Ð¾Ð²Ñ‚Ð¾Ñ€ÑÑ‚ÑŒ move Ñ ÑƒÐ¼ÐµÐ½ÑŒÑˆÐµÐ½Ð½Ñ‹Ð¼ z Ð¿Ñ€Ð¸ Ð¾ÑˆÐ¸Ð±ÐºÐµ -->
     <param name="place_pre_place_single_attempt" value="true"/>
-    <!-- place: пошаговое снижение; smooth=true — мельче шаг; на каждом шаге сначала IK без жёсткого down -->
+    <!-- place: Ð¿Ð¾ÑˆÐ°Ð³Ð¾Ð²Ð¾Ðµ ÑÐ½Ð¸Ð¶ÐµÐ½Ð¸Ðµ; smooth=true â€” Ð¼ÐµÐ»ÑŒÑ‡Ðµ ÑˆÐ°Ð³; Ð½Ð° ÐºÐ°Ð¶Ð´Ð¾Ð¼ ÑˆÐ°Ð³Ðµ ÑÐ½Ð°Ñ‡Ð°Ð»Ð° IK Ð±ÐµÐ· Ð¶Ñ‘ÑÑ‚ÐºÐ¾Ð³Ð¾ down -->
     <param name="place_simple_descent" value="true"/>
     <param name="place_smooth_descent" value="true"/>
     <param name="place_descent_step_m" value="0.055"/>
     <param name="place_descent_step_coarse_m" value="0.055"/>
-    <!-- при ошибке place: сначала detach (куб не уезжает с манипулятором), затем home -->
+    <!-- Ð¿Ñ€Ð¸ Ð¾ÑˆÐ¸Ð±ÐºÐµ place: ÑÐ½Ð°Ñ‡Ð°Ð»Ð° detach (ÐºÑƒÐ± Ð½Ðµ ÑƒÐµÐ·Ð¶Ð°ÐµÑ‚ Ñ Ð¼Ð°Ð½Ð¸Ð¿ÑƒÐ»ÑÑ‚Ð¾Ñ€Ð¾Ð¼), Ð·Ð°Ñ‚ÐµÐ¼ home -->
     <param name="go_home_on_place_failure" value="true"/>
     <param name="detach_before_home_on_place_failure" value="true"/>
     <param name="planning_method_place_descent" value="cartesian_prefer"/>
     <param name="go_home_after_place" value="true"/>
     <param name="post_action_pause_descent_s" value="0.02"/>
-    <!-- запасной путь укладки: ослабленные допуски → joint-space OMPL → прямой шаг на контроллер -->
+    <!-- Ð·Ð°Ð¿Ð°ÑÐ½Ð¾Ð¹ Ð¿ÑƒÑ‚ÑŒ ÑƒÐºÐ»Ð°Ð´ÐºÐ¸: Ð¾ÑÐ»Ð°Ð±Ð»ÐµÐ½Ð½Ñ‹Ðµ Ð´Ð¾Ð¿ÑƒÑÐºÐ¸ â†’ joint-space OMPL â†’ Ð¿Ñ€ÑÐ¼Ð¾Ð¹ ÑˆÐ°Ð³ Ð½Ð° ÐºÐ¾Ð½Ñ‚Ñ€Ð¾Ð»Ð»ÐµÑ€ -->
     <param name="place_relaxed_tol_fallback" value="true"/>
     <param name="place_relaxed_pos_tol" value="0.028"/>
     <param name="place_relaxed_ori_tol" value="0.15"/>
-    <!-- запасные пути отключены по умолчанию: проще траектории; включите при сбоях укладки -->
+    <!-- Ð·Ð°Ð¿Ð°ÑÐ½Ñ‹Ðµ Ð¿ÑƒÑ‚Ð¸ Ð¾Ñ‚ÐºÐ»ÑŽÑ‡ÐµÐ½Ñ‹ Ð¿Ð¾ ÑƒÐ¼Ð¾Ð»Ñ‡Ð°Ð½Ð¸ÑŽ: Ð¿Ñ€Ð¾Ñ‰Ðµ Ñ‚Ñ€Ð°ÐµÐºÑ‚Ð¾Ñ€Ð¸Ð¸; Ð²ÐºÐ»ÑŽÑ‡Ð¸Ñ‚Ðµ Ð¿Ñ€Ð¸ ÑÐ±Ð¾ÑÑ… ÑƒÐºÐ»Ð°Ð´ÐºÐ¸ -->
     <param name="place_joint_fallback_enable" value="false"/>
     <param name="place_joint_fallback_nudges" value="6"/>
     <param name="place_direct_joint_nudge_enable" value="false"/>
     <param name="place_direct_joint_nudge_duration_s" value="0.45"/>
     <param name="place_direct_joint_nudge_try_both" value="true"/>
-    <!-- снижение: XY как у реального ЗХ; вертикальная полилиния; мягче fraction для place -->
+    <!-- ÑÐ½Ð¸Ð¶ÐµÐ½Ð¸Ðµ: XY ÐºÐ°Ðº Ñƒ Ñ€ÐµÐ°Ð»ÑŒÐ½Ð¾Ð³Ð¾ Ð—Ð¥; Ð²ÐµÑ€Ñ‚Ð¸ÐºÐ°Ð»ÑŒÐ½Ð°Ñ Ð¿Ð¾Ð»Ð¸Ð»Ð¸Ð½Ð¸Ñ; Ð¼ÑÐ³Ñ‡Ðµ fraction Ð´Ð»Ñ place -->
     <param name="place_descent_keep_current_xy" value="true"/>
     <param name="place_prefer_vertical_polyline_first" value="true"/>
-    <!-- сначала одна прямая compute_cartesian_path к цели; иначе полилиния (резерв) -->
+    <!-- ÑÐ½Ð°Ñ‡Ð°Ð»Ð° Ð¾Ð´Ð½Ð° Ð¿Ñ€ÑÐ¼Ð°Ñ compute_cartesian_path Ðº Ñ†ÐµÐ»Ð¸; Ð¸Ð½Ð°Ñ‡Ðµ Ð¿Ð¾Ð»Ð¸Ð»Ð¸Ð½Ð¸Ñ (Ñ€ÐµÐ·ÐµÑ€Ð²) -->
     <param name="place_vertical_single_straight" value="true"/>
-    <!-- крупнее шаг — меньше сегментов, если понадобится полилиния -->
+    <!-- ÐºÑ€ÑƒÐ¿Ð½ÐµÐµ ÑˆÐ°Ð³ â€” Ð¼ÐµÐ½ÑŒÑˆÐµ ÑÐµÐ³Ð¼ÐµÐ½Ñ‚Ð¾Ð², ÐµÑÐ»Ð¸ Ð¿Ð¾Ð½Ð°Ð´Ð¾Ð±Ð¸Ñ‚ÑÑ Ð¿Ð¾Ð»Ð¸Ð»Ð¸Ð½Ð¸Ñ -->
     <param name="place_vertical_cartesian_substep_m" value="0.055"/>
     <param name="place_vertical_cartesian_max_segments" value="14"/>
     <param name="place_cartesian_min_fraction" value="0.68"/>
     <param name="place_cartesian_polyline_min_fraction" value="0.58"/>
-    <!-- при упоре в коллизии куба со столом в планировщике: осторожно, только сим -->
+    <!-- Ð¿Ñ€Ð¸ ÑƒÐ¿Ð¾Ñ€Ðµ Ð² ÐºÐ¾Ð»Ð»Ð¸Ð·Ð¸Ð¸ ÐºÑƒÐ±Ð° ÑÐ¾ ÑÑ‚Ð¾Ð»Ð¾Ð¼ Ð² Ð¿Ð»Ð°Ð½Ð¸Ñ€Ð¾Ð²Ñ‰Ð¸ÐºÐµ: Ð¾ÑÑ‚Ð¾Ñ€Ð¾Ð¶Ð½Ð¾, Ñ‚Ð¾Ð»ÑŒÐºÐ¾ ÑÐ¸Ð¼ -->
     <param name="place_cartesian_allow_collisions" value="false"/>
   </node>
 </launch>
+
+
 

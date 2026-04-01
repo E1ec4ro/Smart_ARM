@@ -3,11 +3,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: smart_arm_gazebo_vnc
+    container_name: smart_arm_ai_gazebo_vnc
     ports:
-      - "6080:6080"
-      - "5900:5900"
-      - "11311:11311"
+      - "6180:6080"
+      - "5901:5900"
+      - "11312:11311"
     environment:
       - DISPLAY=:1
     shm_size: "1gb"

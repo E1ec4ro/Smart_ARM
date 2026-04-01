@@ -1,9 +1,32 @@
-world_frame: world
+﻿world_frame: world
 
+# Fallback defaults (used if camera_sources is omitted)
 camera_xyz: [0.619308, 0.874419, 1.18362]
 camera_rpy: [0.027906, 0.947704, -3.09384]
-
 image_width: 800
 image_height: 600
 hfov: 1.6
 
+# Multi-camera setup for AI branch. Add real topics/extrinsics as cameras are added in Gazebo/real system.
+camera_sources:
+  - name: main
+    image_topic: /overhead_camera/image_raw
+    camera_xyz: [0.619308, 0.874419, 1.18362]
+    camera_rpy: [0.027906, 0.947704, -3.09384]
+    image_width: 800
+    image_height: 600
+    hfov: 1.6
+  - name: aux_left
+    image_topic: /aux_left_camera/image_raw
+    camera_xyz: [0.25, 0.95, 1.10]
+    camera_rpy: [0.15, 1.05, -2.45]
+    image_width: 800
+    image_height: 600
+    hfov: 1.57
+  - name: aux_right
+    image_topic: /aux_right_camera/image_raw
+    camera_xyz: [0.95, 0.95, 1.10]
+    camera_rpy: [0.12, 1.03, -3.75]
+    image_width: 800
+    image_height: 600
+    hfov: 1.57

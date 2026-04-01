@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 import math
-import cv2
-import rospy
-import numpy as np
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
-from sensor_msgs.msg import Image
+import cv2
+import numpy as np
+import rospy
 from cv_bridge import CvBridge, CvBridgeError
+from gazebo_msgs.msg import LinkStates, ModelStates
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
-from gazebo_msgs.msg import ModelStates, LinkStates
+from sensor_msgs.msg import Image
 
 
 def param_bool(name: str, default: bool) -> bool:
@@ -33,7 +34,6 @@ def quat_from_rpy(roll: float, pitch: float, yaw: float) -> Quaternion:
     sp = math.sin(pitch * 0.5)
     cy = math.cos(yaw * 0.5)
     sy = math.sin(yaw * 0.5)
-
     q = Quaternion()
     q.w = cr * cp * cy + sr * sp * sy
     q.x = sr * cp * cy - cr * sp * sy
@@ -67,61 +67,138 @@ def quat_rotate(q: Quaternion, v: np.ndarray) -> np.ndarray:
     return np.array([out.x, out.y, out.z], dtype=np.float64)
 
 
+@dataclass
+class CameraConfig:
+    name: str
+    image_topic: str
+    image_width: int
+    image_height: int
+    hfov: float
+    camera_pos_w: np.ndarray
+    camera_q_w: Quaternion
+
+
+@dataclass
+class Detection:
+    xyz: np.ndarray
+    score: float
+    stamp: rospy.Time
+
+
 class NeuralNetworkCamera:
     def __init__(self) -> None:
         rospy.init_node("neural_network_camera", anonymous=True)
         self.bridge = CvBridge()
 
-        self.image_sub = rospy.Subscriber("/overhead_camera/image_raw", Image, self.image_callback, queue_size=1)
         self.image_pub = rospy.Publisher("/overhead_camera/image_detected", Image, queue_size=1)
         self.cube_position_pub = rospy.Publisher("/detected_cube_position", Point, queue_size=1)
         self.cube_pose_pub = rospy.Publisher("/detected_cube_pose_world", PoseStamped, queue_size=1)
         self.goal_pose_pub = rospy.Publisher("/detected_goal_pose_world", PoseStamped, queue_size=1)
 
         self.use_gazebo_ground_truth = param_bool("~use_gazebo_ground_truth", True)
-        self.ground_truth_only = param_bool("~ground_truth_only", True)
+        self.ground_truth_only = param_bool("~ground_truth_only", False)
+        self.fallback_to_ground_truth = param_bool("~fallback_to_ground_truth", True)
+
         self.cube_model_name = str(rospy.get_param("~cube_model_name", "target_cube"))
         self.goal_model_name = str(rospy.get_param("~goal_model_name", "cube_container"))
         self.cube_link_name = str(rospy.get_param("~cube_link_name", "target_cube::cube_link"))
         self.goal_link_name = str(rospy.get_param("~goal_link_name", "cube_container::container_link"))
+
+        self.fusion_max_age_s = float(rospy.get_param("~fusion_max_age_s", 0.45))
+        self.min_cameras_for_fusion = int(rospy.get_param("~min_cameras_for_fusion", 1))
+        self.min_cube_score_publish = float(rospy.get_param("~min_cube_score_publish", 0.15))
+        self.min_goal_score_publish = float(rospy.get_param("~min_goal_score_publish", 0.12))
+        self.ema_alpha = float(rospy.get_param("~pose_ema_alpha", 0.35))
+
+        self._ema_cube: Optional[np.ndarray] = None
+        self._ema_goal: Optional[np.ndarray] = None
+
         self._model_states = None
         self._link_states = None
         if self.use_gazebo_ground_truth:
             rospy.Subscriber("/gazebo/model_states", ModelStates, self._on_model_states, queue_size=1)
             rospy.Subscriber("/gazebo/link_states", LinkStates, self._on_link_states, queue_size=1)
-        self._last_gt_log = rospy.Time(0)
 
         self.lower_red1 = np.array([0, 80, 60])
         self.upper_red1 = np.array([10, 255, 255])
         self.lower_red2 = np.array([170, 80, 60])
         self.upper_red2 = np.array([180, 255, 255])
-
         self.lower_green = np.array([35, 40, 40])
         self.upper_green = np.array([95, 255, 255])
 
-        self.image_width = int(rospy.get_param("~image_width", 800))
-        self.image_height = int(rospy.get_param("~image_height", 600))
-        self.hfov = float(rospy.get_param("~hfov", 1.6))
-
         self.world_frame = str(rospy.get_param("~world_frame", "world"))
-        cam_xyz = rospy.get_param("~camera_xyz", [0.619308, 0.874419, 1.18362])
-        cam_rpy = rospy.get_param("~camera_rpy", [0.027906, 0.947704, -3.09384])
-
-        self.camera_pos_w = np.array([float(cam_xyz[0]), float(cam_xyz[1]), float(cam_xyz[2])], dtype=np.float64)
-        self.camera_q_w = quat_from_rpy(float(cam_rpy[0]), float(cam_rpy[1]), float(cam_rpy[2]))
-
         self.table_center_z = float(rospy.get_param("~table_center_z", rospy.get_param("~table/center_z", 0.40)))
         self.table_size_z = float(rospy.get_param("~table_size_z", rospy.get_param("~table/size_z", 0.05)))
-        self.container_center_z = float(
-            rospy.get_param("~container_center_z", rospy.get_param("~goal_platform/center_z", 0.46))
-        )
+        self.container_center_z = float(rospy.get_param("~container_center_z", rospy.get_param("~goal_platform/center_z", 0.46)))
         self.container_size_z = float(rospy.get_param("~container_size_z", rospy.get_param("~goal_platform/size_z", 0.06)))
-
         self.cube_size = float(rospy.get_param("~cube_size", rospy.get_param("~target_cube/size", 0.08)))
-        # true: не подменять Z цели фиксированным container_top из yaml — использовать Z из link_states (реальная площадка в Gazebo)
         self.goal_pose_keep_link_z = param_bool("~goal_pose_keep_link_z", True)
 
-        rospy.loginfo("Vision estimator initialized: red cube + green goal, pixel->world via ray-plane.")
+        self.cameras = self._load_camera_configs()
+        self.camera_debug_pubs: Dict[str, rospy.Publisher] = {}
+        self._subs: List[rospy.Subscriber] = []
+
+        self._cube_dets: Dict[str, Detection] = {}
+        self._goal_dets: Dict[str, Detection] = {}
+
+        for idx, cam in enumerate(self.cameras):
+            dbg_topic = f"/overhead_camera/{cam.name}/image_detected"
+            self.camera_debug_pubs[cam.name] = rospy.Publisher(dbg_topic, Image, queue_size=1)
+            sub = rospy.Subscriber(cam.image_topic, Image, self._make_image_cb(cam, idx == 0), queue_size=1)
+            self._subs.append(sub)
+            rospy.loginfo("camera[%s]: topic=%s debug=%s", cam.name, cam.image_topic, dbg_topic)
+
+        rospy.loginfo(
+            "Vision AI initialized: cameras=%d fusion(min=%d age=%.2fs) gt_only=%s fallback_gt=%s",
+            len(self.cameras),
+            self.min_cameras_for_fusion,
+            self.fusion_max_age_s,
+            self.ground_truth_only,
+            self.fallback_to_ground_truth,
+        )
+
+    def _load_camera_configs(self) -> List[CameraConfig]:
+        cameras_raw = rospy.get_param("~camera_sources", None)
+        cams: List[CameraConfig] = []
+
+        if isinstance(cameras_raw, list) and cameras_raw:
+            for i, item in enumerate(cameras_raw):
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", f"cam{i}"))
+                image_topic = str(item.get("image_topic", "/overhead_camera/image_raw"))
+                w = int(item.get("image_width", rospy.get_param("~image_width", 800)))
+                h = int(item.get("image_height", rospy.get_param("~image_height", 600)))
+                hfov = float(item.get("hfov", rospy.get_param("~hfov", 1.6)))
+                xyz = item.get("camera_xyz", rospy.get_param("~camera_xyz", [0.619308, 0.874419, 1.18362]))
+                rpy = item.get("camera_rpy", rospy.get_param("~camera_rpy", [0.027906, 0.947704, -3.09384]))
+                cams.append(
+                    CameraConfig(
+                        name=name,
+                        image_topic=image_topic,
+                        image_width=w,
+                        image_height=h,
+                        hfov=hfov,
+                        camera_pos_w=np.array([float(xyz[0]), float(xyz[1]), float(xyz[2])], dtype=np.float64),
+                        camera_q_w=quat_from_rpy(float(rpy[0]), float(rpy[1]), float(rpy[2])),
+                    )
+                )
+
+        if not cams:
+            xyz = rospy.get_param("~camera_xyz", [0.619308, 0.874419, 1.18362])
+            rpy = rospy.get_param("~camera_rpy", [0.027906, 0.947704, -3.09384])
+            cams.append(
+                CameraConfig(
+                    name="main",
+                    image_topic=str(rospy.get_param("~image_topic", "/overhead_camera/image_raw")),
+                    image_width=int(rospy.get_param("~image_width", 800)),
+                    image_height=int(rospy.get_param("~image_height", 600)),
+                    hfov=float(rospy.get_param("~hfov", 1.6)),
+                    camera_pos_w=np.array([float(xyz[0]), float(xyz[1]), float(xyz[2])], dtype=np.float64),
+                    camera_q_w=quat_from_rpy(float(rpy[0]), float(rpy[1]), float(rpy[2])),
+                )
+            )
+        return cams
 
     def _on_model_states(self, msg: ModelStates) -> None:
         self._model_states = msg
@@ -155,204 +232,254 @@ class NeuralNetworkCamera:
         pose.pose = self._link_states.pose[idx]
         return pose
 
-    def _camera_intrinsics(self, w: int, h: int) -> Tuple[float, float, float, float]:
+    def _camera_intrinsics(self, cam: CameraConfig, w: int, h: int) -> Tuple[float, float, float, float]:
         cx = (float(w) - 1.0) * 0.5
         cy = (float(h) - 1.0) * 0.5
-        fx = (float(w) * 0.5) / math.tan(self.hfov * 0.5)
-        vfov = 2.0 * math.atan(math.tan(self.hfov * 0.5) * (float(h) / max(float(w), 1.0)))
-        fy = (float(h) * 0.5) / math.tan(vfov * 0.5)
+        fx = (float(cam.image_width) * 0.5) / math.tan(cam.hfov * 0.5)
+        vfov = 2.0 * math.atan(math.tan(cam.hfov * 0.5) * (float(cam.image_height) / max(float(cam.image_width), 1.0)))
+        fy = (float(cam.image_height) * 0.5) / math.tan(vfov * 0.5)
         return fx, fy, cx, cy
 
-    def _pixel_ray_world(self, u: float, v: float, w: int, h: int) -> Tuple[np.ndarray, np.ndarray]:
-        fx, fy, cx, cy = self._camera_intrinsics(w, h)
+    def _pixel_ray_world(self, cam: CameraConfig, u: float, v: float, w: int, h: int) -> Tuple[np.ndarray, np.ndarray]:
+        fx, fy, cx, cy = self._camera_intrinsics(cam, w, h)
         x = (u - cx) / fx
         y = (v - cy) / fy
         d_cam = np.array([x, y, 1.0], dtype=np.float64)
         d_cam /= max(np.linalg.norm(d_cam), 1e-9)
-        d_w = quat_rotate(self.camera_q_w, d_cam)
-        return self.camera_pos_w.copy(), d_w
+        d_w = quat_rotate(cam.camera_q_w, d_cam)
+        return cam.camera_pos_w.copy(), d_w
 
-    def _intersect_plane_z(self, u: float, v: float, plane_z: float, w: int, h: int) -> Optional[np.ndarray]:
-        o, d = self._pixel_ray_world(u, v, w, h)
+    def _intersect_plane_z(self, cam: CameraConfig, u: float, v: float, plane_z: float, w: int, h: int) -> Optional[np.ndarray]:
+        o, d = self._pixel_ray_world(cam, u, v, w, h)
         if abs(float(d[2])) < 1e-8:
             return None
         t = (float(plane_z) - float(o[2])) / float(d[2])
         if t <= 0.0:
             return None
-        p = o + t * d
-        return p
+        return o + t * d
 
-    def detect_red_cube(self, cv_image):
+    def detect_red_cube(self, cv_image: np.ndarray) -> Tuple[Optional[Tuple[int, int, int, int]], float]:
         hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
-
         mask1 = cv2.inRange(hsv, self.lower_red1, self.upper_red1)
         mask2 = cv2.inRange(hsv, self.lower_red2, self.upper_red2)
         red_mask = cv2.bitwise_or(mask1, mask2)
-
         kernel = np.ones((3, 3), np.uint8)
         red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel, iterations=1)
         red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-
         contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        best_bbox = None
-        best_area = 0.0
-
+        best_bbox, best_area = None, 0.0
         for contour in contours:
             area = float(cv2.contourArea(contour))
-            if area < 150.0:
+            if area < 120.0:
                 continue
             if area > best_area:
                 best_area = area
                 best_bbox = cv2.boundingRect(contour)
 
         h_img, w_img = cv_image.shape[:2]
-        score = 0.0 if best_bbox is None else min(best_area / max(float(w_img * h_img), 1.0) * 50.0, 1.0)
+        score = 0.0 if best_bbox is None else min(best_area / max(float(w_img * h_img), 1.0) * 60.0, 1.0)
         return best_bbox, score
 
-    def detect_green_goal(self, cv_image):
+    def detect_green_goal(self, cv_image: np.ndarray) -> Tuple[Optional[Tuple[int, int, int, int]], float]:
         hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
         green_mask = cv2.inRange(hsv, self.lower_green, self.upper_green)
-
         kernel = np.ones((5, 5), np.uint8)
         green_mask = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, kernel, iterations=1)
         green_mask = cv2.morphologyEx(green_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-
         contours, _ = cv2.findContours(green_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        best_bbox = None
-        best_area = 0.0
+
+        best_bbox, best_area = None, 0.0
         for contour in contours:
             area = float(cv2.contourArea(contour))
-            if area < 500.0:
+            if area < 350.0:
                 continue
             if area > best_area:
                 best_area = area
                 best_bbox = cv2.boundingRect(contour)
 
         h_img, w_img = cv_image.shape[:2]
-        score = 0.0 if best_bbox is None else min(best_area / max(float(w_img * h_img), 1.0) * 10.0, 1.0)
+        score = 0.0 if best_bbox is None else min(best_area / max(float(w_img * h_img), 1.0) * 15.0, 1.0)
         return best_bbox, score
 
-    def image_callback(self, msg: Image) -> None:
+    def _draw_bbox(self, img: np.ndarray, bbox: Tuple[int, int, int, int], color: Tuple[int, int, int], text: str) -> None:
+        x, y, w, h = bbox
+        cv2.rectangle(img, (x, y), (x + w, y + h), color, 2)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        (tw, th), baseline = cv2.getTextSize(text, font, 0.6, 2)
+        y_top = max(y - th - baseline - 4, 0)
+        y_text = max(y - baseline - 2, th + baseline + 2)
+        cv2.rectangle(img, (x, y_top), (x + tw + 6, y), color, -1)
+        cv2.putText(img, text, (x + 3, y_text), font, 0.6, (255, 255, 255), 2)
+
+    def _publish_debug(self, topic_pub: rospy.Publisher, header, image: np.ndarray) -> None:
         try:
-            cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+            out = self.bridge.cv2_to_imgmsg(image, "bgr8")
+            out.header = header
+            topic_pub.publish(out)
         except CvBridgeError as e:
-            rospy.logerr(f"cv_bridge conversion error: {e}")
-            return
+            rospy.logerr("cv_bridge publish error: %s", e)
 
-        bbox, score = self.detect_red_cube(cv_image)
-        goal_bbox, goal_score = self.detect_green_goal(cv_image)
+    def _update_ema(self, old_val: Optional[np.ndarray], new_val: np.ndarray) -> np.ndarray:
+        if old_val is None:
+            return new_val.copy()
+        a = float(np.clip(self.ema_alpha, 0.01, 1.0))
+        return old_val * (1.0 - a) + new_val * a
 
-        h_img, w_img = cv_image.shape[:2]
-        w_eff = int(self.image_width) if int(self.image_width) > 0 else int(w_img)
-        h_eff = int(self.image_height) if int(self.image_height) > 0 else int(h_img)
+    def _fuse_detections(self, dets: Dict[str, Detection], now: rospy.Time) -> Tuple[Optional[np.ndarray], float, int]:
+        valid: List[Detection] = []
+        for det in dets.values():
+            age = max((now - det.stamp).to_sec(), 0.0)
+            if age <= self.fusion_max_age_s:
+                valid.append(det)
+        if len(valid) < self.min_cameras_for_fusion:
+            return None, 0.0, len(valid)
 
-        if self.use_gazebo_ground_truth and self.ground_truth_only:
+        w_sum = 0.0
+        pos = np.zeros(3, dtype=np.float64)
+        for det in valid:
+            w = max(float(det.score), 1e-3)
+            w_sum += w
+            pos += det.xyz * w
+        if w_sum <= 1e-6:
+            return None, 0.0, len(valid)
+        pos /= w_sum
+        conf = float(sum([d.score for d in valid]) / max(len(valid), 1))
+        return pos, conf, len(valid)
+
+    def _publish_cube_pose(self, xyz: np.ndarray, stamp: rospy.Time) -> None:
+        pose = PoseStamped()
+        pose.header.stamp = stamp
+        pose.header.frame_id = self.world_frame
+        pose.pose.position.x = float(xyz[0])
+        pose.pose.position.y = float(xyz[1])
+        pose.pose.position.z = float(xyz[2])
+        pose.pose.orientation.w = 1.0
+        self.cube_pose_pub.publish(pose)
+
+    def _publish_goal_pose(self, xyz: np.ndarray, stamp: rospy.Time) -> None:
+        pose = PoseStamped()
+        pose.header.stamp = stamp
+        pose.header.frame_id = self.world_frame
+        pose.pose.position.x = float(xyz[0])
+        pose.pose.position.y = float(xyz[1])
+        pose.pose.position.z = float(xyz[2])
+        pose.pose.orientation.w = 1.0
+        self.goal_pose_pub.publish(pose)
+
+    def _publish_ground_truth_if_available(self, stamp: rospy.Time) -> None:
+        table_top_z = self.table_center_z + self.table_size_z * 0.5
+        container_top_z = self.container_center_z + self.container_size_z * 0.5
+
+        gt_cube = self._get_link_pose_world(self.cube_link_name) or self._get_model_pose_world(self.cube_model_name)
+        if gt_cube is not None:
+            gt_cube.header.stamp = stamp
+            gt_cube.pose.position.z = float(table_top_z + self.cube_size * 0.5)
+            self.cube_pose_pub.publish(gt_cube)
+
+        gt_goal = self._get_link_pose_world(self.goal_link_name) or self._get_model_pose_world(self.goal_model_name)
+        if gt_goal is not None:
+            gt_goal.header.stamp = stamp
+            if not self.goal_pose_keep_link_z:
+                gt_goal.pose.position.z = float(container_top_z)
+            self.goal_pose_pub.publish(gt_goal)
+
+    def _make_image_cb(self, cam: CameraConfig, is_primary: bool):
+        def _cb(msg: Image) -> None:
+            try:
+                cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+            except CvBridgeError as e:
+                rospy.logerr("cv_bridge conversion error (%s): %s", cam.name, e)
+                return
+
+            cube_bbox, cube_score = self.detect_red_cube(cv_image)
+            goal_bbox, goal_score = self.detect_green_goal(cv_image)
+            h_img, w_img = cv_image.shape[:2]
+
             table_top_z = self.table_center_z + self.table_size_z * 0.5
             container_top_z = self.container_center_z + self.container_size_z * 0.5
 
+            if cube_bbox is not None:
+                self._draw_bbox(cv_image, cube_bbox, (20, 40, 255), f"cube {cube_score:.2f}")
+                x, y, w, h = cube_bbox
+                u = x + w * 0.5
+                v = y + h * 0.5
+                p = Point(x=u, y=v, z=cube_score)
+                self.cube_position_pub.publish(p)
+                if not self.ground_truth_only:
+                    hit = self._intersect_plane_z(cam, u, v, table_top_z, w_img, h_img)
+                    if hit is not None:
+                        hit[2] = table_top_z + self.cube_size * 0.5
+                        self._cube_dets[cam.name] = Detection(xyz=hit, score=cube_score, stamp=msg.header.stamp)
+
+            if goal_bbox is not None:
+                self._draw_bbox(cv_image, goal_bbox, (0, 200, 0), f"goal {goal_score:.2f}")
+                gx, gy, gw, gh = goal_bbox
+                u = gx + gw * 0.5
+                v = gy + gh * 0.5
+                if not self.ground_truth_only:
+                    hit = self._intersect_plane_z(cam, u, v, container_top_z, w_img, h_img)
+                    if hit is not None:
+                        if self.goal_pose_keep_link_z:
+                            hit[2] = container_top_z
+                        self._goal_dets[cam.name] = Detection(xyz=hit, score=goal_score, stamp=msg.header.stamp)
+
+            cv2.putText(
+                cv_image,
+                f"{cam.name} topic={cam.image_topic}",
+                (10, 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 0),
+                2,
+            )
+
+            self._publish_debug(self.camera_debug_pubs[cam.name], msg.header, cv_image)
+            if is_primary:
+                self._publish_debug(self.image_pub, msg.header, cv_image)
+
+            self._publish_fused(msg.header.stamp)
+
+        return _cb
+
+    def _publish_fused(self, stamp: rospy.Time) -> None:
+        if self.use_gazebo_ground_truth and self.ground_truth_only:
+            self._publish_ground_truth_if_available(stamp)
+            return
+
+        cube_xyz, cube_conf, cube_n = self._fuse_detections(self._cube_dets, stamp)
+        goal_xyz, goal_conf, goal_n = self._fuse_detections(self._goal_dets, stamp)
+
+        if cube_xyz is not None and cube_conf >= self.min_cube_score_publish:
+            self._ema_cube = self._update_ema(self._ema_cube, cube_xyz)
+            self._publish_cube_pose(self._ema_cube, stamp)
+        elif self.use_gazebo_ground_truth and self.fallback_to_ground_truth:
             gt_cube = self._get_link_pose_world(self.cube_link_name) or self._get_model_pose_world(self.cube_model_name)
             if gt_cube is not None:
+                table_top_z = self.table_center_z + self.table_size_z * 0.5
+                gt_cube.header.stamp = stamp
                 gt_cube.pose.position.z = float(table_top_z + self.cube_size * 0.5)
                 self.cube_pose_pub.publish(gt_cube)
 
+        if goal_xyz is not None and goal_conf >= self.min_goal_score_publish:
+            self._ema_goal = self._update_ema(self._ema_goal, goal_xyz)
+            self._publish_goal_pose(self._ema_goal, stamp)
+        elif self.use_gazebo_ground_truth and self.fallback_to_ground_truth:
             gt_goal = self._get_link_pose_world(self.goal_link_name) or self._get_model_pose_world(self.goal_model_name)
             if gt_goal is not None:
+                gt_goal.header.stamp = stamp
                 if not self.goal_pose_keep_link_z:
+                    container_top_z = self.container_center_z + self.container_size_z * 0.5
                     gt_goal.pose.position.z = float(container_top_z)
                 self.goal_pose_pub.publish(gt_goal)
 
-        if bbox is not None:
-            x, y, w, h = bbox
-            cv2.rectangle(cv_image, (x, y), (x + w, y + h), (255, 0, 0), 3)
-
-            label = f"Red cube {score:.2f}"
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.7
-            thickness = 2
-            (tw, th), baseline = cv2.getTextSize(label, font, font_scale, thickness)
-
-            y_top = max(y - th - baseline - 6, 0)
-            y_text = max(y - baseline - 3, th + baseline + 3)
-            cv2.rectangle(cv_image, (x, y_top), (x + tw + 6, y), (255, 0, 0), -1)
-            cv2.putText(cv_image, label, (x + 3, y_text), font, font_scale, (255, 255, 255), thickness)
-
-            p = Point()
-            p.x = x + w / 2.0
-            p.y = y + h / 2.0
-            p.z = score
-            self.cube_position_pub.publish(p)
-
-            table_top_z = self.table_center_z + self.table_size_z * 0.5
-            hit = None if (self.use_gazebo_ground_truth and self.ground_truth_only) else self._intersect_plane_z(p.x, p.y, table_top_z, w_eff, h_eff)
-            if hit is not None:
-                pose = PoseStamped()
-                pose.header.stamp = msg.header.stamp
-                pose.header.frame_id = self.world_frame
-                pose.pose.position.x = float(hit[0])
-                pose.pose.position.y = float(hit[1])
-                pose.pose.position.z = float(table_top_z + self.cube_size * 0.5)
-                pose.pose.orientation.w = 1.0
-                self.cube_pose_pub.publish(pose)
-            elif self.use_gazebo_ground_truth:
-                gt = self._get_link_pose_world(self.cube_link_name) or self._get_model_pose_world(self.cube_model_name)
-                if gt is not None:
-                    gt.pose.position.z = float(table_top_z + self.cube_size * 0.5)
-                    self.cube_pose_pub.publish(gt)
-        elif self.use_gazebo_ground_truth:
-            gt = self._get_link_pose_world(self.cube_link_name) or self._get_model_pose_world(self.cube_model_name)
-            if gt is not None:
-                table_top_z = self.table_center_z + self.table_size_z * 0.5
-                gt.pose.position.z = float(table_top_z + self.cube_size * 0.5)
-                self.cube_pose_pub.publish(gt)
-
-        if goal_bbox is not None:
-            gx, gy, gw, gh = goal_bbox
-            cv2.rectangle(cv_image, (gx, gy), (gx + gw, gy + gh), (0, 255, 0), 3)
-
-            glabel = f"Goal {goal_score:.2f}"
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.7
-            thickness = 2
-            (tw, th), baseline = cv2.getTextSize(glabel, font, font_scale, thickness)
-            y_top = max(gy - th - baseline - 6, 0)
-            y_text = max(gy - baseline - 3, th + baseline + 3)
-            cv2.rectangle(cv_image, (gx, y_top), (gx + tw + 6, gy), (0, 255, 0), -1)
-            cv2.putText(cv_image, glabel, (gx + 3, y_text), font, font_scale, (255, 255, 255), thickness)
-
-            u = gx + gw / 2.0
-            v = gy + gh / 2.0
-            container_top_z = self.container_center_z + self.container_size_z * 0.5
-            hit = None if (self.use_gazebo_ground_truth and self.ground_truth_only) else self._intersect_plane_z(u, v, container_top_z, w_eff, h_eff)
-            if hit is not None:
-                pose = PoseStamped()
-                pose.header.stamp = msg.header.stamp
-                pose.header.frame_id = self.world_frame
-                pose.pose.position.x = float(hit[0])
-                pose.pose.position.y = float(hit[1])
-                pose.pose.position.z = float(container_top_z)
-                pose.pose.orientation.w = 1.0
-                self.goal_pose_pub.publish(pose)
-            elif self.use_gazebo_ground_truth:
-                gt = self._get_link_pose_world(self.goal_link_name) or self._get_model_pose_world(self.goal_model_name)
-                if gt is not None:
-                    if not self.goal_pose_keep_link_z:
-                        gt.pose.position.z = float(container_top_z)
-                    self.goal_pose_pub.publish(gt)
-        elif self.use_gazebo_ground_truth:
-            gt = self._get_link_pose_world(self.goal_link_name) or self._get_model_pose_world(self.goal_model_name)
-            if gt is not None:
-                if not self.goal_pose_keep_link_z:
-                    container_top_z = self.container_center_z + self.container_size_z * 0.5
-                    gt.pose.position.z = float(container_top_z)
-                self.goal_pose_pub.publish(gt)
-
-        try:
-            out = self.bridge.cv2_to_imgmsg(cv_image, "bgr8")
-            out.header = msg.header
-            self.image_pub.publish(out)
-        except CvBridgeError as e:
-            rospy.logerr(f"cv_bridge publish error: {e}")
+        rospy.logdebug(
+            "fusion cube: n=%d conf=%.3f goal: n=%d conf=%.3f",
+            cube_n,
+            cube_conf,
+            goal_n,
+            goal_conf,
+        )
 
 
 def main() -> None:
@@ -365,4 +492,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
