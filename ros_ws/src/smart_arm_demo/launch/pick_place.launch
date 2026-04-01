@@ -75,6 +75,14 @@
     <rosparam param="ee_down_rpy">[0.0, 3.14159265, 0.0]</rosparam>
     <!-- false: один план на сегмент — меньше «рывков» при перепланировании -->
     <param name="allow_replanning" value="false"/>
+    <!-- удержание запястий только на езде к pre_place (не на подъёме после attach) -->
+    <param name="hold_wrist_near_current_carry" value="true"/>
+    <param name="carry_overrides_lock_wrist" value="true"/>
+    <param name="carry_wrist_1_tol_rad" value="0.40"/>
+    <param name="carry_wrist_2_tol_rad" value="0.46"/>
+    <param name="carry_wrist_3_tol_rad" value="0.50"/>
+    <!-- вертикаль к grasp: сначала полилиния с постоянным down (не none→down по одному сегменту) -->
+    <param name="pick_vertical_constant_down_first" value="true"/>
     <param name="lock_wrist" value="false"/>
     <param name="wrist_2_center" value="1.57"/>
     <param name="wrist_3_center" value="0.0"/>
@@ -85,9 +93,9 @@
     <!-- первый этап _move_via_safe_z не ниже (верх стола + зазор) в base_link -->
     <param name="enforce_min_safe_z_above_table" value="true"/>
     <param name="safe_z_clearance_above_table_m" value="0.10"/>
-    <!-- ниже скорость/ускорение — плавнее профиль на контроллере, меньше «рваных» сегментов -->
-    <param name="vel_scale" value="0.34"/>
-    <param name="acc_scale" value="0.30"/>
+    <!-- после сглаживания геометрии пути можно чуть поднять скорость — короче время цикла -->
+    <param name="vel_scale" value="0.40"/>
+    <param name="acc_scale" value="0.34"/>
     <param name="planning_time" value="25.0"/>
     <!-- меньше внутренних перепланирований OMPL — предсказуемее и обычно короче путь -->
     <param name="planning_attempts" value="5"/>
@@ -107,7 +115,12 @@
     <param name="pos_tol" value="0.005"/>
     <!-- cartesian_prefer: сначала прямые/ломаные в ЗХ (предсказуемо), иначе OMPL -->
     <param name="planning_method" value="cartesian_prefer"/>
-    <param name="planning_method_lift" value="cartesian_prefer"/>
+    <!-- после attach у куба collision в сцене — декартов путь вверх часто режется; OMPL надёжнее -->
+    <param name="planning_method_lift" value="ompl"/>
+    <!-- перенос с прикреплённым кубом к точке над площадкой: иначе пустой план и срабатывает аварийный home с кубом -->
+    <param name="planning_method_pre_place" value="ompl"/>
+    <param name="limit_joint_deviation_exempt_move_pre_place" value="true"/>
+    <param name="hold_wrist_exempt_move_pre_place" value="true"/>
     <!-- один compute_cartesian_path: (x,y,safe_z) → (x,y,z) без лишнего стопа между сегментами -->
     <param name="cartesian_safe_z_single_plan" value="true"/>
     <!-- мельче шаг — ближе к прямой в ЗХ; полилиния чуть мягче порог fraction -->
@@ -121,13 +134,21 @@
     <param name="max_motion_wait_s" value="45.0"/>
     <!-- 1.0 — использовать время после TOPT (оптимально по времени в рамках лимитов суставов) -->
     <param name="trajectory_time_scale" value="1.0"/>
-    <param name="post_action_pause_s" value="0.05"/>
-    <param name="motion_wait_floor_s" value="0.12"/>
+    <param name="post_action_pause_s" value="0.04"/>
+    <param name="motion_wait_floor_s" value="0.10"/>
+    <param name="cartesian_point_dt_sec" value="0.032"/>
     <param name="motion_wait_floor_place_descent_s" value="0.05"/>
     <param name="attach_max_distance_m" value="0.22"/>
     <!-- EE не выше центра куба чем на столько (base_link), иначе виртуальный attach без касания -->
-    <param name="attach_max_dz_above_cube_m" value="0.14"/>
+    <param name="attach_max_dz_above_cube_m" value="0.16"/>
     <param name="min_clearance_above_cube_top_m" value="0.03"/>
+    <!-- pre→grasp: не сужать OMPL коридором суставов; перед attach — микро-снижение если EE ещё «висит» -->
+    <param name="limit_joint_deviation_exempt_grasp_descent" value="true"/>
+    <param name="limit_joint_deviation_exempt_post_attach_lift" value="true"/>
+    <param name="grasp_attach_repair_enable" value="true"/>
+    <param name="grasp_attach_repair_max_attempts" value="6"/>
+    <param name="grasp_attach_repair_step_m" value="0.016"/>
+    <param name="grasp_attach_repair_below_safe_z_margin_m" value="0.14"/>
     <param name="min_approach_above_grasp_m" value="0.16"/>
     <!-- false: не вызывать /close перед /attach — перенос только через Gazebo attach -->
     <param name="gripper_close_before_attach" value="false"/>
@@ -161,8 +182,9 @@
     <param name="place_smooth_descent" value="true"/>
     <param name="place_descent_step_m" value="0.055"/>
     <param name="place_descent_step_coarse_m" value="0.055"/>
-    <!-- при ошибке укладки всё равно попытаться уехать домой (осторожно, если куб ещё на схвате) -->
+    <!-- при ошибке place: сначала detach (куб не уезжает с манипулятором), затем home -->
     <param name="go_home_on_place_failure" value="true"/>
+    <param name="detach_before_home_on_place_failure" value="true"/>
     <param name="planning_method_place_descent" value="cartesian_prefer"/>
     <param name="go_home_after_place" value="true"/>
     <param name="post_action_pause_descent_s" value="0.02"/>
